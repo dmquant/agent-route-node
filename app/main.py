@@ -56,6 +56,7 @@ from app.api_logger import (
 )
 from app.edge_register import register_with_worker, start_heartbeat, stop_heartbeat
 from app.workspace_sync import start_workspace_sync, stop_workspace_sync, sync_session_now
+from app.task_puller import start_task_puller, stop_task_puller
 
 app = FastAPI(title="AI Execution Bridge API", description="Pydantic structured REST & WS gateway for Agent CLIs.")
 
@@ -217,10 +218,12 @@ async def startup_event():
     await register_with_worker(available)
     start_heartbeat()
     start_workspace_sync()
+    start_task_puller()
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Graceful shutdown: cancel running tasks and persist final state."""
+    stop_task_puller()
     stop_workspace_sync()
     stop_heartbeat()
     task_manager.stop_gc_loop()
