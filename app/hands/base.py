@@ -82,12 +82,31 @@ def resolve_cli_path(binary: str) -> str:
 
 
 def get_cli_env() -> dict:
-    """Build a subprocess environment with enriched PATH for CLI tools.
+    """Build a subprocess environment with enriched PATH and API keys.
 
-    Python venvs and uvicorn often strip PATH to a minimal set.
-    This ensures node, npx, git, and brew-installed tools are findable.
+    Python venvs and uvicorn often strip PATH and env vars.
+    This loads keys from shell profiles and .env files.
     """
     env = os.environ.copy()
+
+    # Load API keys from shell profile if not already in env
+    # (handles case where keys are in .bashrc/.zshrc but not in .env)
+    for profile in ["~/.bashrc", "~/.zshrc", "~/.profile", "~/.bash_profile"]:
+        path = os.path.expanduser(profile)
+        if os.path.exists(path):
+            try:
+                with open(path, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith('export ') and '=' in line:
+                            kv = line[7:].strip()  # remove 'export '
+                            key, _, val = kv.partition('=')
+                            key = key.strip()
+                            val = val.strip().strip('"').strip("'")
+                            if key and val and key not in env:
+                                env[key] = val
+            except Exception:
+                pass
     path_parts = env.get("PATH", "").split(os.pathsep)
 
     # Directories to inject (prepend, in priority order)
