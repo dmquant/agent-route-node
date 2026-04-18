@@ -58,6 +58,21 @@ agent-route-node status
 ./stop.sh
 ```
 
+### 6. Update to latest version
+
+```bash
+cd ~/.agent-route/node
+git pull
+./stop.sh
+./start.sh
+```
+
+Or one-liner:
+
+```bash
+cd ~/.agent-route/node && git pull && ./stop.sh && ./start.sh
+```
+
 ## What it does
 
 Your edge node:
