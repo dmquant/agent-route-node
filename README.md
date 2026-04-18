@@ -19,31 +19,43 @@ python3 -m venv .venv
 
 ## Usage
 
-### 1. Register with a worker
+### 1. Get an invite key
+
+Ask your network admin to generate an invite key (`ik_...`) from the **Edge Nodes** page in the Agent Route dashboard. Each key is single-use and may have an expiration.
+
+### 2. Register your node
 
 ```bash
 agent-route-node register \
   --worker-url https://agent-route.example.workers.dev \
-  --admin-key sk_admin_xxx \
+  --invite-key ik_your_invite_key_here \
   --name "My Mac Studio"
 ```
 
 This will:
 - Test your available CLI agents (gemini, claude, codex)
 - Register your node with the cloud orchestrator
-- Generate a node token (`nk_...`) for authentication
-- Save config to `~/.agent-route/.env`
+- Generate a unique node token (`nk_...`) for ongoing authentication
+- Save all config to `~/.agent-route/.env`
 
-### 2. Start the node
+No admin key is needed — the invite key handles authorization.
+
+### 3. Start the node
 
 ```bash
 agent-route-node start
 ```
 
-### 3. Check status
+### 4. Check status
 
 ```bash
 agent-route-node status
+```
+
+### 5. Stop the node
+
+```bash
+./stop.sh
 ```
 
 ## What it does
@@ -54,7 +66,7 @@ Your edge node:
 - Receives tasks from the load balancer based on capacity and performance
 - Streams execution output in real-time via WebSocket
 - Syncs workspace files to cloud storage (R2)
-- Sends heartbeats to stay in the fleet
+- Sends heartbeats every 30s to stay in the fleet
 
 ## Requirements
 
@@ -67,14 +79,15 @@ Your edge node:
 
 ## Configuration
 
-All config lives in `~/.agent-route/.env` (or `AGENT_ROUTE_HOME`):
+All config lives in `~/.agent-route/.env` (or set `AGENT_ROUTE_HOME`):
 
 ```env
-# Set by registration
+# Set automatically by registration
 CF_WORKER_URL=https://agent-route.example.workers.dev
 NODE_TOKEN=nk_...
 NODE_ID=...
 NODE_URL=http://localhost:8017
+NODE_KEY=dcpn_...
 
 # Agent toggles
 ENABLE_GEMINI_CLI=true
@@ -85,7 +98,20 @@ ENABLE_OLLAMA_API=true
 
 ## Using your token
 
-The node token (`nk_...`) works as SSO across:
-- **Agent Route Frontend** — login at the web dashboard
-- **Infinite Research** — authenticate research sessions
+After registration, you receive a node token (`nk_...`). This works as SSO across:
+
+- **Agent Route Frontend** — enter the token to login at the web dashboard
+- **Infinite Research** — same token authenticates research sessions
 - **API access** — `curl -H "X-API-Key: nk_..." https://worker/api/...`
+
+## For Admins
+
+To generate invite keys for new nodes:
+
+1. Login to the Agent Route dashboard with your admin key (`sk_admin_...`)
+2. Go to **Edge Nodes** page
+3. Expand **Invite Keys** section
+4. Click **Generate** — optionally add a label
+5. Copy the `ik_...` key and share it with the node operator
+
+Each invite key is single-use and consumed upon successful registration.
