@@ -28,31 +28,52 @@ _COMMON_BIN_DIRS = [
 
 
 def resolve_cli_path(binary: str) -> str:
-    """Resolve the full path to a CLI binary, with macOS-aware fallbacks.
+    """Resolve the full path to a CLI binary, with cross-platform fallbacks.
 
-    1. shutil.which (uses current PATH)
-    2. /opt/homebrew/bin (Apple Silicon brew)
-    3. /usr/local/bin (Intel brew / standard)
-    4. nvm node directories (auto-detect latest version)
-    5. Falls back to bare name (let the OS try at spawn time)
+    Checks: PATH, brew dirs, nvm, fnm, volta, ~/.local/bin, custom NODE_BIN_DIR
     """
     # 1. Standard which
     found = shutil.which(binary)
     if found:
         return found
 
-    # 2-3. Check common bin dirs
-    for d in ["/opt/homebrew/bin", "/usr/local/bin"]:
+    # 2. Check common bin dirs
+    search_dirs = [
+        "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin",
+        os.path.expanduser("~/.local/bin"),
+        os.path.expanduser("~/.npm-global/bin"),
+    ]
+
+    # Custom NODE_BIN from env
+    custom = os.getenv("NODE_BIN_DIR")
+    if custom:
+        search_dirs.insert(0, custom)
+
+    # volta
+    volta = os.path.expanduser("~/.volta/bin")
+    if os.path.isdir(volta):
+        search_dirs.insert(0, volta)
+
+    for d in search_dirs:
         candidate = os.path.join(d, binary)
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
 
-    # 4. nvm — find latest installed node version
+    # 3. nvm — find latest installed node version
     nvm_base = os.path.expanduser("~/.nvm/versions/node")
     if os.path.isdir(nvm_base):
         versions = sorted(os.listdir(nvm_base), reverse=True)
         for v in versions:
             candidate = os.path.join(nvm_base, v, "bin", binary)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+
+    # 4. fnm
+    fnm_base = os.path.expanduser("~/.local/share/fnm/node-versions")
+    if os.path.isdir(fnm_base):
+        versions = sorted(os.listdir(fnm_base), reverse=True)
+        for v in versions:
+            candidate = os.path.join(fnm_base, v, "installation", "bin", binary)
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                 return candidate
 
@@ -70,7 +91,13 @@ def get_cli_env() -> dict:
     path_parts = env.get("PATH", "").split(os.pathsep)
 
     # Directories to inject (prepend, in priority order)
-    extra_dirs = ["/opt/homebrew/bin", "/usr/local/bin"]
+    extra_dirs = [
+        "/opt/homebrew/bin",   # macOS Apple Silicon brew
+        "/usr/local/bin",      # macOS Intel brew / Linux common
+        "/usr/bin",            # Linux system
+        os.path.expanduser("~/.local/bin"),  # pip/user installs
+        os.path.expanduser("~/.npm-global/bin"),  # npm global
+    ]
 
     # nvm — add the latest Node version's bin dir
     nvm_base = os.path.expanduser("~/.nvm/versions/node")
@@ -81,6 +108,26 @@ def get_cli_env() -> dict:
             if os.path.isdir(nvm_bin):
                 extra_dirs.insert(0, nvm_bin)
                 break
+
+    # fnm (fast node manager)
+    fnm_base = os.path.expanduser("~/.local/share/fnm/node-versions")
+    if os.path.isdir(fnm_base):
+        versions = sorted(os.listdir(fnm_base), reverse=True)
+        for v in versions:
+            fnm_bin = os.path.join(fnm_base, v, "installation", "bin")
+            if os.path.isdir(fnm_bin):
+                extra_dirs.insert(0, fnm_bin)
+                break
+
+    # volta
+    volta_bin = os.path.expanduser("~/.volta/bin")
+    if os.path.isdir(volta_bin):
+        extra_dirs.insert(0, volta_bin)
+
+    # Custom NODE_BIN from env
+    custom_node = os.getenv("NODE_BIN_DIR")
+    if custom_node and os.path.isdir(custom_node):
+        extra_dirs.insert(0, custom_node)
 
     # Prepend missing dirs
     for d in reversed(extra_dirs):
