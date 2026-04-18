@@ -24,12 +24,17 @@ def cmd_register(args):
     import platform
 
     worker_url = args.worker_url or os.getenv("CF_WORKER_URL", "")
+    invite_key = args.invite_key or os.getenv("INVITE_KEY", "")
     admin_key = args.admin_key or os.getenv("CF_WORKER_API_KEY", "")
     node_url = args.node_url or os.getenv("NODE_URL", f"http://localhost:{args.port}")
     node_name = args.name or os.getenv("NODE_NAME", f"{platform.node()}")
 
-    if not worker_url or not admin_key:
-        print("Error: --worker-url and --admin-key are required (or set CF_WORKER_URL and CF_WORKER_API_KEY)")
+    if not worker_url:
+        print("Error: --worker-url is required (or set CF_WORKER_URL)")
+        sys.exit(1)
+    if not invite_key and not admin_key:
+        print("Error: --invite-key or --admin-key is required")
+        print("  Get an invite key from your admin, or use admin key for self-registration")
         sys.exit(1)
 
     # Discover hands by probing local bridge (if running)
@@ -54,17 +59,24 @@ def cmd_register(args):
     print(f"  URL:  {node_url}")
     print(f"  Hands: {[h['name'] for h in hands]}")
 
+    node_secret = os.urandom(16).hex()
     body = {
         "name": node_name,
         "apiUrl": node_url,
-        "apiKey": admin_key,
+        "apiKey": f"dcpn_{node_secret}",
         "hands": hands,
         "platform": {"os": platform.system().lower(), "arch": platform.machine(), "python": platform.python_version()},
     }
+    if invite_key:
+        body["inviteKey"] = invite_key
+
+    headers_dict = {"Content-Type": "application/json"}
+    if admin_key:
+        headers_dict["X-API-Key"] = admin_key
 
     resp = httpx.post(
         f"{worker_url}/api/nodes/register", json=body,
-        headers={"Content-Type": "application/json", "X-API-Key": admin_key},
+        headers=headers_dict,
         timeout=120,
     )
 
@@ -91,15 +103,15 @@ def cmd_register(args):
 
     # Write to .env
     env_path = get_env_path()
-    _write_env(env_path, {
+    env_updates = {
         "CF_WORKER_URL": worker_url,
-        "CF_WORKER_API_KEY": admin_key,
         "NODE_ID": data["nodeId"],
         "NODE_NAME": f'"{node_name}"',
         "NODE_URL": node_url,
-        "NODE_KEY": admin_key,
+        "NODE_KEY": f"dcpn_{node_secret}",
         "NODE_TOKEN": data["token"],
-    })
+    }
+    _write_env(env_path, env_updates)
     print(f"\nConfig written to {env_path}")
     print(f"\nNext: agent-route-node start")
 
@@ -183,7 +195,8 @@ def main():
     # register
     reg = sub.add_parser("register", help="Register with an agent-route worker")
     reg.add_argument("--worker-url", help="CF Worker URL (e.g. https://agent-route.example.workers.dev)")
-    reg.add_argument("--admin-key", help="Admin API key for initial registration")
+    reg.add_argument("--invite-key", help="Invite key from admin (ik_...)")
+    reg.add_argument("--admin-key", help="Admin API key (alternative to invite key)")
     reg.add_argument("--name", help="Display name for this node")
     reg.add_argument("--node-url", help="This node's reachable URL (default: http://localhost:PORT)")
     reg.add_argument("--port", type=int, default=8017, help="Port (default: 8017)")
