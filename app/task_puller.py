@@ -68,6 +68,10 @@ async def _pull_and_execute():
                 # Post result back
                 await _post_result(client, worker_url, auth_key, task_id, exit_code, output)
 
+                # Sync workspace files to R2
+                from app.workspace_sync import sync_session_now
+                await sync_session_now(session_id or task_id)
+
     except Exception as e:
         if "ConnectError" not in str(type(e)):
             print(f"[task-puller] Error: {e}")
