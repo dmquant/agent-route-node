@@ -101,18 +101,58 @@ def cmd_register(args):
         for fh in data["failedHands"]:
             print(f"  Failed:  {fh['hand']} — {fh.get('error', '?')}")
 
-    # Write to .env
+    # Write full .env
     env_path = get_env_path()
-    env_updates = {
-        "CF_WORKER_URL": worker_url,
-        "NODE_ID": data["nodeId"],
-        "NODE_NAME": f'"{node_name}"',
-        "NODE_URL": node_url,
-        "NODE_KEY": f"dcpn_{node_secret}",
-        "NODE_TOKEN": data["token"],
-    }
-    _write_env(env_path, env_updates)
+
+    # If file doesn't exist or is mostly empty, write a complete template
+    existing_lines = 0
+    if os.path.exists(env_path):
+        with open(env_path, 'r') as f:
+            existing_lines = sum(1 for l in f if l.strip() and not l.startswith('#'))
+
+    if existing_lines < 5:
+        # Write full config
+        with open(env_path, 'w') as f:
+            f.write(f"""# ─── Agent Enable Flags ───
+ENABLE_GEMINI_CLI=true
+ENABLE_CLAUDE_REMOTE_CONTROL=true
+ENABLE_CODEX_SERVER=true
+ENABLE_OLLAMA_API=false
+ENABLE_MFLUX_IMAGE=false
+ENABLE_VANE_SEARCH=false
+
+# ─── Node Identity (set by registration) ───
+CF_WORKER_URL={worker_url}
+NODE_ID={data["nodeId"]}
+NODE_NAME="{node_name}"
+NODE_URL={node_url}
+NODE_KEY=dcpn_{node_secret}
+NODE_TOKEN={data["token"]}
+
+# ─── Ollama (optional — set ENABLE_OLLAMA_API=true to use) ───
+# OLLAMA_HOST=http://localhost:11434
+# OLLAMA_MODEL=llama3.2
+
+# ─── Vane AI Search (optional — set ENABLE_VANE_SEARCH=true to use) ───
+# VANE_URL=http://localhost:3000
+# VANE_CHAT_MODEL=gemma4:26b
+# VANE_EMBED_MODEL=nomic-embed-text:latest
+""")
+    else:
+        # Update existing .env with registration data
+        _write_env(env_path, {
+            "CF_WORKER_URL": worker_url,
+            "NODE_ID": data["nodeId"],
+            "NODE_NAME": f'"{node_name}"',
+            "NODE_URL": node_url,
+            "NODE_KEY": f"dcpn_{node_secret}",
+            "NODE_TOKEN": data["token"],
+        })
+
     print(f"\nConfig written to {env_path}")
+    print(f"\nUse this token for frontend login:")
+    print(f"  {data['token']}")
+    print(f"\nEdit {env_path} to enable/disable hands")
     print(f"\nNext: agent-route-node start")
 
 

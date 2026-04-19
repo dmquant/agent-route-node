@@ -1,6 +1,6 @@
 # Agent Route Edge Node
 
-Edge node for the [Agent Route](https://github.com/dmquant/agent-route) multi-agent orchestration network. Run AI agents (Gemini CLI, Claude Code, Codex, Ollama) on your local machine and connect them to the cloud orchestrator.
+Edge node for the [Agent Route](https://github.com/dmquant/agent-route) multi-agent orchestration network. Run AI agents locally and connect them to the cloud orchestrator for distributed task execution.
 
 ## Quick Install
 
@@ -11,8 +11,8 @@ curl -sSL https://raw.githubusercontent.com/dmquant/agent-route-node/main/instal
 Or manually:
 
 ```bash
-git clone https://github.com/dmquant/agent-route-node.git
-cd agent-route-node
+git clone https://github.com/dmquant/agent-route-node.git ~/.agent-route/node
+cd ~/.agent-route/node
 python3 -m venv .venv
 .venv/bin/pip install -e .
 ```
@@ -21,7 +21,7 @@ python3 -m venv .venv
 
 ### 1. Get an invite key
 
-Ask your network admin to generate an invite key (`ik_...`) from the **Edge Nodes** page in the Agent Route dashboard. Each key is single-use and may have an expiration.
+Ask your network admin to generate an invite key (`ik_...`) from the **Edge Nodes** page in the Agent Route dashboard.
 
 ### 2. Register your node
 
@@ -33,100 +33,151 @@ agent-route-node register \
 ```
 
 This will:
-- Test your available CLI agents (gemini, claude, codex)
+- Discover your available CLI agents
 - Register your node with the cloud orchestrator
-- Generate a unique node token (`nk_...`) for ongoing authentication
-- Save all config to `~/.agent-route/.env`
+- Generate a unique node token (`nk_...`) for authentication
+- Write a complete config to `~/.agent-route/.env`
 
-No admin key is needed — the invite key handles authorization.
+### 3. Configure hands
 
-### 3. Start the node
+Edit `~/.agent-route/.env` to enable/disable hands:
+
+```env
+# Set to true/false to enable/disable each hand
+ENABLE_GEMINI_CLI=true
+ENABLE_CLAUDE_REMOTE_CONTROL=true
+ENABLE_CODEX_SERVER=true
+ENABLE_OLLAMA_API=false
+ENABLE_MFLUX_IMAGE=false
+ENABLE_VANE_SEARCH=false
+```
+
+Only enabled hands will register with the orchestrator and receive tasks.
+
+### 4. Start the node
 
 ```bash
 agent-route-node start
 ```
 
-### 4. Check status
+### 5. Check status
 
 ```bash
 agent-route-node status
 ```
 
-### 5. Stop the node
+### 6. Stop the node
 
 ```bash
-./stop.sh
+agent-route-node stop
+# or from install dir:
+cd ~/.agent-route/node && ./stop.sh
 ```
 
-### 6. Update to latest version
-
-```bash
-cd ~/.agent-route/node
-git pull
-./stop.sh
-./start.sh
-```
-
-Or one-liner:
+### 7. Update to latest version
 
 ```bash
 cd ~/.agent-route/node && git pull && ./stop.sh && ./start.sh
 ```
 
-## What it does
+### 8. Diagnostics
 
-Your edge node:
-- Runs AI CLI agents locally via subprocess (gemini, claude, codex, ollama)
-- Registers with the Agent Route cloud worker as an available node
-- Receives tasks from the load balancer based on capacity and performance
-- Streams execution output in real-time via WebSocket
-- Syncs workspace files to cloud storage (R2)
-- Sends heartbeats every 30s to stay in the fleet
+```bash
+# Test all hands
+python3 test_hands.py
 
-## Requirements
+# Test a specific hand
+python3 test_hands.py gemini
 
-- Python 3.11+
-- At least one CLI agent installed:
-  - `npx @anthropic-ai/claude-code` (Claude Code)
-  - `npx gemini` (Gemini CLI)
-  - `npx codex` (Codex CLI)
-  - Ollama running locally (optional)
+# Debug a hand (shows exact command, env, auth)
+python3 debug_hand.py claude
+
+# Watch task execution log
+tail -f ~/.agent-route/task_puller.log
+```
+
+## Available Hands
+
+| Hand | Type | Requires | Enable Flag |
+|------|------|----------|-------------|
+| **gemini** | CLI | `npx gemini` (Node.js) | `ENABLE_GEMINI_CLI` |
+| **claude** | CLI | `npx @anthropic-ai/claude-code` (Node.js) | `ENABLE_CLAUDE_REMOTE_CONTROL` |
+| **codex** | CLI | `npx codex` (Node.js) | `ENABLE_CODEX_SERVER` |
+| **ollama** | HTTP | Ollama running locally | `ENABLE_OLLAMA_API` |
+| **mflux** | HTTP | MFLUX on Apple Silicon | `ENABLE_MFLUX_IMAGE` |
+| **vane** | HTTP | Vane search instance | `ENABLE_VANE_SEARCH` |
 
 ## Configuration
 
-All config lives in `~/.agent-route/.env` (or set `AGENT_ROUTE_HOME`):
+All config lives in `~/.agent-route/.env`:
 
 ```env
-# Set automatically by registration
+# ─── Agent Enable Flags ───
+ENABLE_GEMINI_CLI=true
+ENABLE_CLAUDE_REMOTE_CONTROL=true
+ENABLE_CODEX_SERVER=true
+ENABLE_OLLAMA_API=false
+ENABLE_MFLUX_IMAGE=false
+ENABLE_VANE_SEARCH=false
+
+# ─── Node Identity (set by registration) ───
 CF_WORKER_URL=https://agent-route.example.workers.dev
 NODE_TOKEN=nk_...
 NODE_ID=...
 NODE_URL=http://localhost:8017
 NODE_KEY=dcpn_...
 
-# Agent toggles
-ENABLE_GEMINI_CLI=true
-ENABLE_CLAUDE_REMOTE_CONTROL=true
-ENABLE_CODEX_SERVER=true
-ENABLE_OLLAMA_API=true
+# ─── Ollama (optional) ───
+OLLAMA_HOST=http://localhost:11434
+OLLAMA_MODEL=llama3.2
+
+# ─── Vane AI Search (optional) ───
+VANE_URL=http://localhost:3000
+VANE_CHAT_MODEL=gemma4:26b
+VANE_EMBED_MODEL=nomic-embed-text:latest
 ```
 
-## Using your token
+## How It Works
+
+Your edge node:
+- Registers enabled hands with the Agent Route cloud orchestrator
+- Polls for pending tasks every 5 seconds
+- Executes tasks locally via CLI subprocess or HTTP API
+- Downloads workspace files from R2 before execution (cross-node context)
+- Uploads output files back to R2 after execution
+- Posts results back to the orchestrator
+- Sends heartbeats every 30s with load stats
+- One task per hand type runs at a time per node
+
+## Using Your Token
 
 After registration, you receive a node token (`nk_...`). This works as SSO across:
 
-- **Agent Route Frontend** — enter the token to login at the web dashboard
+- **Agent Route Frontend** — enter the token to login
 - **Infinite Research** — same token authenticates research sessions
 - **API access** — `curl -H "X-API-Key: nk_..." https://worker/api/...`
 
 ## For Admins
 
-To generate invite keys for new nodes:
+To manage the node fleet:
 
 1. Login to the Agent Route dashboard with your admin key (`sk_admin_...`)
 2. Go to **Edge Nodes** page
-3. Expand **Invite Keys** section
-4. Click **Generate** — optionally add a label
-5. Copy the `ik_...` key and share it with the node operator
+3. Generate **Invite Keys** for new nodes
+4. Expand any node card to:
+   - Toggle individual hands on/off
+   - Adjust max concurrent tasks
+   - Rename the node
+   - Suspend/resume the node
+   - Reset degraded status
+   - Delete the node
 
-Each invite key is single-use and consumed upon successful registration.
+## Requirements
+
+- Python 3.11+
+- At least one CLI agent installed:
+  - `npx @anthropic-ai/claude-code` (Claude Code)
+  - `npx gemini` (Gemini CLI)  
+  - `npx codex` (Codex CLI)
+  - Ollama running locally (optional)
+  - Vane search instance (optional)
