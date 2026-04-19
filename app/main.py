@@ -213,8 +213,12 @@ async def startup_event():
     start_scheduler()
     # Start periodic GC for completed tasks
     await task_manager.start_gc_loop(interval_seconds=60, max_age_ms=300000)
-    # Register with CF Worker as edge node (if configured)
-    available = [{"name": name} for name in hand_registry.list_names()]
+    # Register only enabled hands (respect .env gates)
+    available = []
+    for name in hand_registry.list_names():
+        gate = _ENV_GATES.get(name)
+        if not gate or os.getenv(gate) == "true":
+            available.append({"name": name})
     await register_with_worker(available)
     start_heartbeat()
     start_workspace_sync()
