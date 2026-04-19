@@ -20,12 +20,20 @@ def get_db_path() -> str:
 
 
 def get_env_path() -> str:
-    """Return the .env file path."""
-    # Check local .env first (standalone), then monorepo root
-    local = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
-    if os.path.exists(local):
-        return local
+    """Return the .env file path.
+    Priority: data dir (~/.agent-route/.env) > monorepo root > local (code dir)
+    """
+    # 1. Data directory — the canonical location for standalone installs
+    data_env = os.path.join(get_data_dir(), ".env")
+    if os.path.exists(data_env):
+        return data_env
+    # 2. Monorepo root (../../.env from packages/api_bridge/)
     monorepo = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), ".env")
     if os.path.exists(monorepo):
         return monorepo
-    return local  # default to local
+    # 3. Local to code dir (fallback)
+    local = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+    if os.path.exists(local):
+        return local
+    # Default: data dir (will be created by register)
+    return data_env
