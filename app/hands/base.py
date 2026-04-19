@@ -82,55 +82,48 @@ def resolve_cli_path(binary: str) -> str:
 
 
 def get_cli_env() -> dict:
-    """Build a subprocess environment with enriched PATH and API keys.
+    """Build a subprocess environment that mirrors a real login shell.
 
-    Python venvs and uvicorn often strip PATH and env vars.
-    This loads keys from shell profiles and .env files.
+    CLI tools (claude, gemini, codex) authenticate via their own login sessions
+    stored in config directories (~/.claude, ~/.config/gemini, etc.).
+    The subprocess must have the correct HOME, XDG paths, and full PATH
+    so the CLI tools can find their auth tokens.
     """
-    env = os.environ.copy()
+    # Start from a login shell's full environment — not the stripped venv env.
+    # This ensures CLI auth sessions, PATH, and all config are available.
+    try:
+        import subprocess as _sp
+        shell = os.getenv("SHELL", "/bin/bash")
+        result = _sp.run(
+            [shell, "-l", "-c", "env"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            env = {}
+            for line in result.stdout.split('\n'):
+                if '=' in line:
+                    key, _, val = line.partition('=')
+                    if key:
+                        env[key] = val
+            # Merge: login shell env as base, current process env overrides
+            # (so .env vars from dotenv take precedence)
+            for k, v in os.environ.items():
+                env[k] = v
+        else:
+            env = os.environ.copy()
+    except Exception:
+        env = os.environ.copy()
 
-    # Load API keys from an interactive login shell.
-    # This catches keys set in .bashrc, .zshrc, .profile, sourced files, etc.
-    # We spawn a login shell, print its env, and extract missing keys.
-    _API_KEYS = {"ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY",
-                 "GEMINI_API_KEY", "HF_TOKEN", "OLLAMA_HOST"}
-    missing = [k for k in _API_KEYS if k not in env or not env[k]]
-    if missing:
-        try:
-            import subprocess
-            # Try user's default shell, fallback to bash
-            shell = os.getenv("SHELL", "/bin/bash")
-            # -l = login shell (sources profile), -i = interactive (sources rc)
-            # -c 'env' = print all env vars
-            result = subprocess.run(
-                [shell, "-l", "-c", "env"],
-                capture_output=True, text=True, timeout=5,
-                env={"HOME": os.path.expanduser("~"), "PATH": "/usr/bin:/bin"},
-            )
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
-                    if '=' in line:
-                        key, _, val = line.partition('=')
-                        if key in missing and val and key not in env:
-                            env[key] = val
-        except Exception:
-            pass
+    # Ensure HOME is correct (critical for CLI auth session lookup)
+    home = os.path.expanduser("~")
+    env["HOME"] = home
+    env.setdefault("USER", os.getenv("USER", ""))
+    env.setdefault("SHELL", os.getenv("SHELL", "/bin/bash"))
 
-    # Also try loading from a .env.keys file if it exists
-    keys_file = os.path.expanduser("~/.agent-route/.env.keys")
-    if os.path.exists(keys_file):
-        try:
-            with open(keys_file, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#') and '=' in line:
-                        key, _, val = line.partition('=')
-                        key = key.strip()
-                        val = val.strip().strip('"').strip("'")
-                        if key and val:
-                            env[key] = val
-        except Exception:
-            pass
+    # Ensure XDG dirs are set (some tools use these for config)
+    env.setdefault("XDG_CONFIG_HOME", os.path.join(home, ".config"))
+    env.setdefault("XDG_DATA_HOME", os.path.join(home, ".local", "share"))
+    env.setdefault("XDG_CACHE_HOME", os.path.join(home, ".cache"))
     path_parts = env.get("PATH", "").split(os.pathsep)
 
     # Directories to inject (prepend, in priority order)
