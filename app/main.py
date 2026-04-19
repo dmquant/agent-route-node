@@ -1345,6 +1345,7 @@ _ENV_GATES = {
     "codex": "ENABLE_CODEX_SERVER",
     "ollama": "ENABLE_OLLAMA_API",
     "mflux": "ENABLE_MFLUX_IMAGE",
+    "vane": "ENABLE_VANE_SEARCH",
 }
 
 def _check_env_gate(client: str):

@@ -117,8 +117,9 @@ def auto_register_all():
     from app.hands.codex_hand import CodexHand
     from app.hands.ollama_hand import OllamaHand
     from app.hands.mflux_hand import MfluxHand
+    from app.hands.vane_hand import VaneHand
 
-    for HandClass in [GeminiHand, ClaudeHand, CodexHand, OllamaHand, MfluxHand]:
+    for HandClass in [GeminiHand, ClaudeHand, CodexHand, OllamaHand, MfluxHand, VaneHand]:
         hand_registry.register(HandClass())
 
     print(f"[HandRegistry] {len(hand_registry)} hands registered: {hand_registry.list_names()}")
