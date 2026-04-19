@@ -43,7 +43,7 @@ def _save_state():
 def _get_config():
     return {
         "worker_url": os.getenv("CF_WORKER_URL", ""),
-        "api_key": os.getenv("CF_WORKER_API_KEY", ""),
+        "api_key": os.getenv("NODE_TOKEN", "") or os.getenv("CF_WORKER_API_KEY", ""),
     }
 
 
