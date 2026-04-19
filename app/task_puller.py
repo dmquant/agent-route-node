@@ -1,13 +1,26 @@
 """
 Task Puller — polls the CF Worker for pending tasks assigned to this node,
 executes them locally via the hand registry, and posts results back.
+Logs all activity to ~/.agent-route/task_puller.log
 """
 import os
 import asyncio
+import logging
+from datetime import datetime
 import httpx
+
+from app.config import get_data_dir
 
 _puller_task = None
 POLL_INTERVAL = 5  # seconds
+
+# File logger
+_log_file = os.path.join(get_data_dir(), "task_puller.log")
+_logger = logging.getLogger("task_puller")
+_logger.setLevel(logging.DEBUG)
+_fh = logging.FileHandler(_log_file, encoding="utf-8")
+_fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-5s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+_logger.addHandler(_fh)
 
 
 async def _pull_and_execute():
@@ -24,34 +37,38 @@ async def _pull_and_execute():
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            # Pull pending tasks
             resp = await client.get(
                 f"{worker_url}/api/nodes/{node_id}/tasks/pending",
                 headers={"X-API-Key": auth_key},
             )
             if resp.status_code != 200:
+                _logger.warning(f"Pull failed: HTTP {resp.status_code} — {resp.text[:200]}")
                 return
 
             tasks = resp.json().get("tasks", [])
             if not tasks:
                 return
 
+            _logger.info(f"Pulled {len(tasks)} task(s)")
+
             for task in tasks:
                 task_id = task["id"]
                 hand_name = task["hand_name"]
                 prompt = task["prompt"]
                 session_id = task.get("session_id")
+                start_time = datetime.now()
 
-                print(f"[task-puller] Executing task {task_id[:8]} ({hand_name})")
+                _logger.info(f"EXEC {task_id[:12]} | hand={hand_name} | prompt={prompt[:80]}...")
+                print(f"[task-puller] Executing {task_id[:8]} ({hand_name})")
 
-                # Get the hand
                 hand = hand_registry.get(hand_name)
                 if not hand:
-                    print(f"[task-puller] No hand for '{hand_name}', skipping")
-                    await _post_result(client, worker_url, auth_key, task_id, 1, f"Hand '{hand_name}' not available")
+                    msg = f"Hand '{hand_name}' not registered"
+                    _logger.error(f"FAIL {task_id[:12]} | {msg}")
+                    print(f"[task-puller] {msg}")
+                    await _post_result(client, worker_url, auth_key, task_id, 1, msg)
                     continue
 
-                # Execute
                 workspace_dir = os.path.join(get_workspaces_dir(), session_id or task_id)
                 os.makedirs(workspace_dir, exist_ok=True)
 
@@ -59,13 +76,18 @@ async def _pull_and_execute():
                     result = await hand.execute(prompt, workspace_dir=workspace_dir)
                     exit_code = result.exit_code
                     output = result.output
-                    print(f"[task-puller] Task {task_id[:8]} done (exit={exit_code}, {len(output)} chars)")
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    _logger.info(f"DONE {task_id[:12]} | hand={hand_name} | exit={exit_code} | {elapsed:.1f}s | {len(output)} chars")
+                    if exit_code != 0:
+                        _logger.warning(f"FAIL {task_id[:12]} | output={output[:300]}")
+                    print(f"[task-puller] Task {task_id[:8]} done (exit={exit_code}, {elapsed:.1f}s)")
                 except Exception as e:
                     exit_code = 1
                     output = str(e)
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    _logger.error(f"ERROR {task_id[:12]} | hand={hand_name} | {elapsed:.1f}s | {e}")
                     print(f"[task-puller] Task {task_id[:8]} failed: {e}")
 
-                # Post result back
                 await _post_result(client, worker_url, auth_key, task_id, exit_code, output)
 
                 # Sync workspace files to R2
@@ -74,27 +96,29 @@ async def _pull_and_execute():
 
     except Exception as e:
         if "ConnectError" not in str(type(e)):
+            _logger.error(f"Poll error: {e}")
             print(f"[task-puller] Error: {e}")
 
 
 async def _post_result(client, worker_url, auth_key, task_id, exit_code, result_text):
     """Post task result back to CF Worker callback endpoint."""
     try:
-        # Use the tasks/complete endpoint (no HMAC needed, uses token auth)
-        await client.post(
+        resp1 = await client.post(
             f"{worker_url}/api/tasks/{task_id}/complete",
             json={"exitCode": exit_code, "resultText": result_text},
             headers={"X-API-Key": auth_key, "Content-Type": "application/json"},
             timeout=30,
         )
-        # Also complete via node-tasks callback for metrics tracking
-        await client.post(
+        _logger.info(f"CALLBACK {task_id[:12]} | tasks/complete → {resp1.status_code}")
+        resp2 = await client.post(
             f"{worker_url}/api/nodes/task-complete/{task_id}",
             json={"exitCode": exit_code, "resultText": result_text},
             headers={"X-API-Key": auth_key, "Content-Type": "application/json"},
             timeout=10,
         )
+        _logger.info(f"CALLBACK {task_id[:12]} | nodes/task-complete → {resp2.status_code}")
     except Exception as e:
+        _logger.error(f"CALLBACK {task_id[:12]} | FAILED: {e}")
         print(f"[task-puller] Callback failed for {task_id[:8]}: {e}")
 
 
