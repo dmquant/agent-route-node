@@ -107,14 +107,16 @@ class GeminiHand(Hand):
         on_log: Optional[Callable[[str], Any]] = None,
         **kwargs,
     ) -> HandResult:
-        skills_dir = os.path.expanduser("~/.gemini/skills")
         cmd = resolve_cli_path("npx")
         args = [
             "gemini", "-p", input,
             "--output-format", "json",
             "--yolo",
-            "--include-directories", skills_dir,
         ]
+        # Only include skills dir if it exists
+        skills_dir = os.path.expanduser("~/.gemini/skills")
+        if os.path.isdir(skills_dir):
+            args.extend(["--include-directories", skills_dir])
 
         os.makedirs(workspace_dir, exist_ok=True)
         await self._ensure_git(workspace_dir)
@@ -144,6 +146,7 @@ class GeminiHand(Hand):
 
         # ── Stream stderr in real-time (Gemini writes progress to stderr) ──
         raw_stdout_chunks: list[str] = []
+        raw_stderr_chunks: list[str] = []
 
         async def stream_stderr():
             nonlocal on_log
@@ -155,6 +158,7 @@ class GeminiHand(Hand):
                 if not chunk:
                     break
                 text = chunk.decode('utf-8', errors='replace')
+                raw_stderr_chunks.append(text)
                 buf += text
                 while '\n' in buf:
                     line, buf = buf.split('\n', 1)
@@ -165,12 +169,10 @@ class GeminiHand(Hand):
                     if any(p.search(line) for p in _NOISE_PATTERNS):
                         continue
                     if on_log:
-                        # Try to classify as a structured activity
                         activity = classify_line(line, agent="gemini")
                         if activity:
                             await on_log(json.dumps(activity.to_chunk()))
                         else:
-                            # Fallback: system-level line
                             await on_log(json.dumps({"chunkType": "system", "content": line}))
 
         async def read_stdout():
@@ -196,6 +198,12 @@ class GeminiHand(Hand):
         # If parsed output is empty but exit was 0, use raw stdout
         if not output_text and exit_code == 0 and raw_stdout.strip():
             output_text = raw_stdout.strip()
+
+        # If failed with no output, include stderr for debugging
+        if not output_text and exit_code != 0:
+            stderr_text = ''.join(raw_stderr_chunks).strip()
+            if stderr_text:
+                output_text = stderr_text
 
         return HandResult(output=output_text or f"Exit code {exit_code}", exit_code=exit_code)
 
