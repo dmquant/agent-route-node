@@ -12,7 +12,7 @@ import httpx
 from app.config import get_data_dir
 
 _puller_task = None
-POLL_INTERVAL = 5  # seconds
+POLL_INTERVAL = 60  # seconds
 
 # File logger
 _log_file = os.path.join(get_data_dir(), "task_puller.log")
@@ -33,6 +33,7 @@ async def _pull_and_execute():
     auth_key = os.getenv("NODE_TOKEN", "") or os.getenv("CF_WORKER_API_KEY", "")
 
     if not worker_url or not node_id or not auth_key:
+        _logger.warning(f"Skipping poll: worker_url={'set' if worker_url else 'MISSING'} node_id={'set' if node_id else 'MISSING'} auth={'set' if auth_key else 'MISSING'}")
         return
 
     try:
@@ -167,8 +168,11 @@ async def _post_result(client, worker_url, auth_key, task_id, exit_code, result_
 async def _poll_loop():
     """Continuously poll for tasks. Auto-restarts on any failure."""
     consecutive_errors = 0
+    tick = 0
     while True:
+        tick += 1
         try:
+            _logger.debug(f"Poll tick #{tick}")
             await _pull_and_execute()
             consecutive_errors = 0
         except asyncio.CancelledError:
@@ -204,6 +208,7 @@ def start_task_puller():
                 await asyncio.sleep(10)
 
     _puller_task = asyncio.create_task(_resilient_loop())
+    _logger.info(f"Task puller started (interval={POLL_INTERVAL}s, node={os.getenv('NODE_ID','?')}, worker={os.getenv('CF_WORKER_URL','?')})")
     print(f"[task-puller] Started (polling every {POLL_INTERVAL}s)")
 
 
