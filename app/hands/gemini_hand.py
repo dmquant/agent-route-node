@@ -18,12 +18,20 @@ from app.hands.stream_processor import GeminiStreamProcessor
 def _parse_gemini_json_output(raw: str) -> str:
     """Extract response text from Gemini's --output-format json output.
 
-    Gemini CLI outputs a JSON array with response objects and stats.
-    We only want the response text, not stats/metadata.
+    Gemini CLI outputs JSON (single object or array) possibly prefixed
+    with non-JSON lines (YOLO warnings, etc.). We strip those first.
     """
+    # Strip non-JSON prefix lines (YOLO mode warnings, etc.)
+    stripped = raw.strip()
+    for prefix in ['{', '[']:
+        idx = stripped.find(prefix)
+        if idx > 0:
+            stripped = stripped[idx:]
+            break
+
     # Strategy 1: Parse as complete JSON
     try:
-        data = json.loads(raw.strip())
+        data = json.loads(stripped)
         if isinstance(data, list):
             parts = []
             for item in data:
@@ -184,6 +192,10 @@ class GeminiHand(Hand):
         # The frontend OutputParser handles markdown/code-block rendering from raw text
         if output_text and on_log:
             await on_log(json.dumps({"chunkType": "text", "content": output_text}))
+
+        # If parsed output is empty but exit was 0, use raw stdout
+        if not output_text and exit_code == 0 and raw_stdout.strip():
+            output_text = raw_stdout.strip()
 
         return HandResult(output=output_text or f"Exit code {exit_code}", exit_code=exit_code)
 
