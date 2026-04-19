@@ -36,7 +36,7 @@ class VaneHand(Hand):
             }))
 
         try:
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=600) as client:
                 # Get providers/models if not cached
                 if not self._provider_cache:
                     prov_resp = await client.get(f"{self.base_url}/api/providers")
@@ -118,7 +118,7 @@ class VaneHand(Hand):
                 resp = await client.post(
                     f"{self.base_url}/api/search",
                     json=body,
-                    timeout=120,
+                    timeout=600,
                 )
 
                 if resp.status_code != 200:
