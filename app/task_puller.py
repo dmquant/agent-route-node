@@ -165,19 +165,45 @@ async def _post_result(client, worker_url, auth_key, task_id, exit_code, result_
 
 
 async def _poll_loop():
-    """Continuously poll for tasks."""
+    """Continuously poll for tasks. Auto-restarts on any failure."""
+    consecutive_errors = 0
     while True:
         try:
             await _pull_and_execute()
+            consecutive_errors = 0
+        except asyncio.CancelledError:
+            _logger.info("Poll loop cancelled")
+            return
         except Exception as e:
+            consecutive_errors += 1
+            _logger.error(f"Poll error (#{consecutive_errors}): {type(e).__name__}: {e}")
             print(f"[task-puller] Poll error: {e}")
-        await asyncio.sleep(POLL_INTERVAL)
+            # Back off on repeated errors
+            if consecutive_errors > 5:
+                await asyncio.sleep(30)
+        try:
+            await asyncio.sleep(POLL_INTERVAL)
+        except asyncio.CancelledError:
+            _logger.info("Poll loop cancelled during sleep")
+            return
 
 
 def start_task_puller():
-    """Start the background task puller."""
+    """Start the background task puller with auto-restart."""
     global _puller_task
-    _puller_task = asyncio.create_task(_poll_loop())
+
+    async def _resilient_loop():
+        """Wrapper that restarts the poll loop if it dies."""
+        while True:
+            try:
+                await _poll_loop()
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                _logger.error(f"Poll loop died: {e} — restarting in 10s")
+                await asyncio.sleep(10)
+
+    _puller_task = asyncio.create_task(_resilient_loop())
     print(f"[task-puller] Started (polling every {POLL_INTERVAL}s)")
 
 
