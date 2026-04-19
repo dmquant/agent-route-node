@@ -89,24 +89,48 @@ def get_cli_env() -> dict:
     """
     env = os.environ.copy()
 
-    # Load API keys from shell profile if not already in env
-    # (handles case where keys are in .bashrc/.zshrc but not in .env)
-    for profile in ["~/.bashrc", "~/.zshrc", "~/.profile", "~/.bash_profile"]:
-        path = os.path.expanduser(profile)
-        if os.path.exists(path):
-            try:
-                with open(path, 'r') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line.startswith('export ') and '=' in line:
-                            kv = line[7:].strip()  # remove 'export '
-                            key, _, val = kv.partition('=')
-                            key = key.strip()
-                            val = val.strip().strip('"').strip("'")
-                            if key and val and key not in env:
-                                env[key] = val
-            except Exception:
-                pass
+    # Load API keys from an interactive login shell.
+    # This catches keys set in .bashrc, .zshrc, .profile, sourced files, etc.
+    # We spawn a login shell, print its env, and extract missing keys.
+    _API_KEYS = {"ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY",
+                 "GEMINI_API_KEY", "HF_TOKEN", "OLLAMA_HOST"}
+    missing = [k for k in _API_KEYS if k not in env or not env[k]]
+    if missing:
+        try:
+            import subprocess
+            # Try user's default shell, fallback to bash
+            shell = os.getenv("SHELL", "/bin/bash")
+            # -l = login shell (sources profile), -i = interactive (sources rc)
+            # -c 'env' = print all env vars
+            result = subprocess.run(
+                [shell, "-l", "-c", "env"],
+                capture_output=True, text=True, timeout=5,
+                env={"HOME": os.path.expanduser("~"), "PATH": "/usr/bin:/bin"},
+            )
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if '=' in line:
+                        key, _, val = line.partition('=')
+                        if key in missing and val and key not in env:
+                            env[key] = val
+        except Exception:
+            pass
+
+    # Also try loading from a .env.keys file if it exists
+    keys_file = os.path.expanduser("~/.agent-route/.env.keys")
+    if os.path.exists(keys_file):
+        try:
+            with open(keys_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        key, _, val = line.partition('=')
+                        key = key.strip()
+                        val = val.strip().strip('"').strip("'")
+                        if key and val:
+                            env[key] = val
+        except Exception:
+            pass
     path_parts = env.get("PATH", "").split(os.pathsep)
 
     # Directories to inject (prepend, in priority order)
