@@ -6,6 +6,7 @@ with answer, sources, and metadata.
 
 import os
 import json
+import asyncio
 from typing import Optional, Callable, Any
 
 from app.hands.base import Hand, HandResult
@@ -114,22 +115,55 @@ class VaneHand(Hand):
                         "content": f"Model: {chat_models[0]['name']} | Mode: {body['optimizationMode']}"
                     }))
 
-                # Execute search
-                resp = await client.post(
-                    f"{self.base_url}/api/search",
-                    json=body,
-                    timeout=600,
-                )
+                # Execute search with retry on empty/rate-limited results
+                EMPTY_MARKERS = [
+                    "could not find any relevant information",
+                    "i'm sorry",
+                    "no relevant results",
+                    "an error has occurred",
+                ]
+                MAX_RETRIES = 3
+                answer = ""
+                sources = []
 
-                if resp.status_code != 200:
-                    return HandResult(
-                        output=f"Vane API error {resp.status_code}: {resp.text[:500]}",
-                        exit_code=1,
+                for attempt in range(MAX_RETRIES + 1):
+                    if attempt > 0:
+                        wait = 15 * attempt  # 15s, 30s, 45s
+                        if on_log:
+                            await on_log(json.dumps({
+                                "chunkType": "system",
+                                "content": f"⏳ Retry {attempt}/{MAX_RETRIES} in {wait}s (SearXNG rate limit)..."
+                            }))
+                        await asyncio.sleep(wait)
+
+                    resp = await client.post(
+                        f"{self.base_url}/api/search",
+                        json=body,
+                        timeout=600,
                     )
 
-                data = resp.json()
-                answer = data.get("message", "")
-                sources = data.get("sources", [])
+                    if resp.status_code != 200:
+                        if attempt < MAX_RETRIES:
+                            continue
+                        return HandResult(
+                            output=f"Vane API error {resp.status_code}: {resp.text[:500]}",
+                            exit_code=1,
+                        )
+
+                    data = resp.json()
+                    answer = data.get("message", "")
+                    sources = data.get("sources", [])
+
+                    # Check if result is empty/rate-limited
+                    is_empty = any(marker in answer.lower() for marker in EMPTY_MARKERS)
+                    if not is_empty and answer.strip():
+                        break  # Got real results
+                    if attempt < MAX_RETRIES:
+                        if on_log:
+                            await on_log(json.dumps({
+                                "chunkType": "system",
+                                "content": f"⚠️ Empty result: \"{answer[:60]}...\""
+                            }))
 
                 # Format as structured Markdown
                 md = self._format_markdown(input, answer, sources)
