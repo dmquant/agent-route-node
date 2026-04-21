@@ -1,9 +1,11 @@
-.venv/
+node_modules/
 __pycache__/
 *.pyc
-*.db
-*.db-wal
-*.db-shm
+venv/
+.venv/
 .env
-.workspace_sync_state.json
+*.egg-info/
+dist/
+build/
 .DS_Store
+
