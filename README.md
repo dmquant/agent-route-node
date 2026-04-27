@@ -109,6 +109,28 @@ tail -f ~/.agent-route/task_puller.log
 | **vane** | HTTP | Vane search instance | `ENABLE_VANE_SEARCH` |
 | **opencode** | CLI | `opencode` binary on PATH ([install](https://opencode.ai/install)) | `ENABLE_OPENCODE` |
 
+### Adding the **opencode** hand
+
+```bash
+# 1. Install the opencode CLI
+curl -fsSL https://opencode.ai/install | bash
+
+# 2. Configure auth for whichever provider you want to use
+opencode auth set anthropic           # or openai, openrouter, etc.
+
+# 3. Pick a default model in ~/.agent-route/.env
+echo 'ENABLE_OPENCODE=true'                                >> ~/.agent-route/.env
+echo 'OPENCODE_MODEL=anthropic/claude-3-5-sonnet'          >> ~/.agent-route/.env
+
+# 4. Restart the node
+agent-route-node stop && agent-route-node start
+```
+
+opencode runs as a per-task subprocess with `cwd` set to the session
+workspace, so its file tools (`write`, `edit`, `read`, `bash`) operate
+inside the agent-route session directory. Files persist across nodes via
+the puller's R2 sync — same as `claude` / `gemini` / `codex`.
+
 ## Configuration
 
 All config lives in `~/.agent-route/.env`:
@@ -121,6 +143,7 @@ ENABLE_CODEX_SERVER=true
 ENABLE_OLLAMA_API=false
 ENABLE_MFLUX_IMAGE=false
 ENABLE_VANE_SEARCH=false
+ENABLE_OPENCODE=false
 
 # ─── Node Identity (set by registration) ───
 CF_WORKER_URL=https://agent-route.example.workers.dev
@@ -191,7 +214,8 @@ To manage the node fleet:
 - Python 3.11+
 - At least one CLI agent installed:
   - `npx @anthropic-ai/claude-code` (Claude Code)
-  - `npx gemini` (Gemini CLI)  
+  - `npx gemini` (Gemini CLI)
   - `npx codex` (Codex CLI)
+  - `opencode` (OpenCode CLI — multi-provider; install via `curl -fsSL https://opencode.ai/install | bash`)
   - Ollama running locally (optional)
   - Vane search instance (optional)
