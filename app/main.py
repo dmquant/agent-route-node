@@ -1350,6 +1350,7 @@ _ENV_GATES = {
     "ollama": "ENABLE_OLLAMA_API",
     "mflux": "ENABLE_MFLUX_IMAGE",
     "vane": "ENABLE_VANE_SEARCH",
+    "opencode": "ENABLE_OPENCODE",
 }
 
 def _check_env_gate(client: str):

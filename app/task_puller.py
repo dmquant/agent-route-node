@@ -1,8 +1,21 @@
 """
 Task Puller — polls the CF Worker for pending tasks assigned to this node,
 executes them locally via the hand registry, and posts results back.
+
+Concurrent execution model:
+  - The poll loop fires every POLL_INTERVAL seconds and pulls up to 5 pending
+    tasks per call. Each task spawns as its own asyncio coroutine, gated by a
+    global semaphore sized to MAX_CONCURRENT.
+  - The poll loop never waits for a task to finish — it returns as soon as
+    coroutines are spawned, so a single slow Claude/Codex CLI can no longer
+    wedge the entire node.
+  - In-flight task count is tracked so we don't pull more than we can
+    accommodate (= MAX_CONCURRENT - currently_running).
+
 Logs all activity to ~/.agent-route/task_puller.log
 """
+from __future__ import annotations  # PEP 604 union syntax for Python 3.9 venvs
+
 import os
 import asyncio
 import logging
@@ -12,7 +25,15 @@ import httpx
 from app.config import get_data_dir
 
 _puller_task = None
-POLL_INTERVAL = 60  # seconds
+
+# Tunables. POLL_INTERVAL is short because the loop is now non-blocking; the
+# old 60s value was a workaround for the sequential bottleneck.
+POLL_INTERVAL = 15  # seconds
+MAX_CONCURRENT = int(os.getenv("NODE_MAX_CONCURRENT", "3"))
+
+# Concurrency primitives. Created lazily on first poll so import order is safe.
+_executor_sem: asyncio.Semaphore | None = None
+_inflight_ids: set[str] = set()
 
 # File logger
 _log_file = os.path.join(get_data_dir(), "task_puller.log")
@@ -23,57 +44,52 @@ _fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-5s | %(message)s"
 _logger.addHandler(_fh)
 
 
-async def _pull_and_execute():
-    """Pull pending tasks and execute them."""
+def _ensure_sem() -> asyncio.Semaphore:
+    """Create the semaphore on first use (after the event loop exists)."""
+    global _executor_sem
+    if _executor_sem is None:
+        _executor_sem = asyncio.Semaphore(MAX_CONCURRENT)
+    return _executor_sem
+
+
+async def _execute_one(task: dict, worker_url: str, auth_key: str) -> None:
+    """Execute a single task end-to-end — gated by the concurrency semaphore.
+
+    Spawned as a fire-and-forget asyncio task by `_pull_and_execute`. Owns
+    its own httpx client so the poll loop's client can be closed
+    independently. Always removes itself from `_inflight_ids` on exit so a
+    crashed task can't leak a slot.
+    """
     from app.hands.registry import hand_registry
     from app.config import get_workspaces_dir
 
-    worker_url = os.getenv("CF_WORKER_URL", "")
-    node_id = os.getenv("NODE_ID", "")
-    auth_key = os.getenv("NODE_TOKEN", "") or os.getenv("CF_WORKER_API_KEY", "")
+    task_id = task["id"]
+    hand_name = task["hand_name"]
+    prompt = task["prompt"]
+    session_id = task.get("session_id")
 
-    if not worker_url or not node_id or not auth_key:
-        _logger.warning(f"Skipping poll: worker_url={'set' if worker_url else 'MISSING'} node_id={'set' if node_id else 'MISSING'} auth={'set' if auth_key else 'MISSING'}")
-        return
+    sem = _ensure_sem()
+    async with sem:
+        start_time = datetime.now()
+        _logger.info(f"EXEC {task_id[:12]} | hand={hand_name} | prompt={prompt[:80]}...")
+        print(f"[task-puller] Executing {task_id[:8]} ({hand_name})")
 
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(
-                f"{worker_url}/api/nodes/{node_id}/tasks/pending",
-                headers={"X-API-Key": auth_key},
-            )
-            if resp.status_code != 200:
-                _logger.warning(f"Pull failed: HTTP {resp.status_code} — {resp.text[:200]}")
-                return
-
-            tasks = resp.json().get("tasks", [])
-            if not tasks:
-                return
-
-            _logger.info(f"Pulled {len(tasks)} task(s)")
-
-            for task in tasks:
-                task_id = task["id"]
-                hand_name = task["hand_name"]
-                prompt = task["prompt"]
-                session_id = task.get("session_id")
-                start_time = datetime.now()
-
-                _logger.info(f"EXEC {task_id[:12]} | hand={hand_name} | prompt={prompt[:80]}...")
-                print(f"[task-puller] Executing {task_id[:8]} ({hand_name})")
-
+        exit_code = 1
+        output = ""
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
                 hand = hand_registry.get(hand_name)
                 if not hand:
-                    msg = f"Hand '{hand_name}' not registered"
-                    _logger.error(f"FAIL {task_id[:12]} | {msg}")
-                    print(f"[task-puller] {msg}")
-                    await _post_result(client, worker_url, auth_key, task_id, 1, msg)
-                    continue
+                    output = f"Hand '{hand_name}' not registered"
+                    _logger.error(f"FAIL {task_id[:12]} | {output}")
+                    print(f"[task-puller] {output}")
+                    await _post_result(client, worker_url, auth_key, task_id, 1, output)
+                    return
 
                 workspace_dir = os.path.join(get_workspaces_dir(), session_id or task_id)
                 os.makedirs(workspace_dir, exist_ok=True)
 
-                # Download workspace files from R2 (cross-node context transfer)
+                # Pull workspace files generated by other nodes from R2.
                 await _sync_workspace_from_r2(client, worker_url, auth_key, session_id or task_id, workspace_dir)
 
                 try:
@@ -94,9 +110,62 @@ async def _pull_and_execute():
 
                 await _post_result(client, worker_url, auth_key, task_id, exit_code, output)
 
-                # Sync workspace files to R2
-                from app.workspace_sync import sync_session_now
-                await sync_session_now(session_id or task_id)
+                # Push generated workspace files back to R2 for cross-node visibility.
+                try:
+                    from app.workspace_sync import sync_session_now
+                    await sync_session_now(session_id or task_id)
+                except Exception as e:
+                    _logger.warning(f"workspace_sync skipped for {task_id[:12]}: {e}")
+        finally:
+            _inflight_ids.discard(task_id)
+
+
+async def _pull_and_execute() -> None:
+    """Pull pending tasks and dispatch each to a background executor.
+
+    NEVER awaits task execution — that's the whole point. The poll loop must
+    return promptly so it can fire again POLL_INTERVAL seconds later.
+    """
+    worker_url = os.getenv("CF_WORKER_URL", "")
+    node_id = os.getenv("NODE_ID", "")
+    auth_key = os.getenv("NODE_TOKEN", "") or os.getenv("CF_WORKER_API_KEY", "")
+
+    if not worker_url or not node_id or not auth_key:
+        _logger.warning(f"Skipping poll: worker_url={'set' if worker_url else 'MISSING'} node_id={'set' if node_id else 'MISSING'} auth={'set' if auth_key else 'MISSING'}")
+        return
+
+    # Don't even ask for tasks if we're already at capacity. Saves the worker
+    # from atomically marking tasks as 'running' that we have nowhere to put.
+    available = MAX_CONCURRENT - len(_inflight_ids)
+    if available <= 0:
+        _logger.debug(f"At capacity ({len(_inflight_ids)}/{MAX_CONCURRENT}) — skipping pull")
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{worker_url}/api/nodes/{node_id}/tasks/pending",
+                headers={"X-API-Key": auth_key},
+            )
+            if resp.status_code != 200:
+                _logger.warning(f"Pull failed: HTTP {resp.status_code} — {resp.text[:200]}")
+                return
+
+            tasks = resp.json().get("tasks", [])
+            if not tasks:
+                return
+
+            # Dedupe: don't re-spawn an executor for a task we're already running.
+            new_tasks = [t for t in tasks if t["id"] not in _inflight_ids]
+            if not new_tasks:
+                return
+
+            _logger.info(f"Pulled {len(tasks)} task(s) — {len(new_tasks)} new, spawning executors (cap={MAX_CONCURRENT}, in-flight before={len(_inflight_ids)})")
+
+            for task in new_tasks:
+                _inflight_ids.add(task["id"])
+                # Fire-and-forget; semaphore inside _execute_one enforces concurrency.
+                asyncio.create_task(_execute_one(task, worker_url, auth_key))
 
     except Exception as e:
         if "ConnectError" not in str(type(e)):
@@ -172,7 +241,7 @@ async def _poll_loop():
     while True:
         tick += 1
         try:
-            _logger.debug(f"Poll tick #{tick}")
+            _logger.debug(f"Poll tick #{tick} (in-flight={len(_inflight_ids)}/{MAX_CONCURRENT})")
             await _pull_and_execute()
             consecutive_errors = 0
         except asyncio.CancelledError:
@@ -208,8 +277,8 @@ def start_task_puller():
                 await asyncio.sleep(10)
 
     _puller_task = asyncio.create_task(_resilient_loop())
-    _logger.info(f"Task puller started (interval={POLL_INTERVAL}s, node={os.getenv('NODE_ID','?')}, worker={os.getenv('CF_WORKER_URL','?')})")
-    print(f"[task-puller] Started (polling every {POLL_INTERVAL}s)")
+    _logger.info(f"Task puller started (interval={POLL_INTERVAL}s, max_concurrent={MAX_CONCURRENT}, node={os.getenv('NODE_ID','?')}, worker={os.getenv('CF_WORKER_URL','?')})")
+    print(f"[task-puller] Started (polling every {POLL_INTERVAL}s, max {MAX_CONCURRENT} concurrent)")
 
 
 def stop_task_puller():

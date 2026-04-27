@@ -81,6 +81,8 @@ class HandRegistry:
             "codex": "ENABLE_CODEX_SERVER",
             "ollama": "ENABLE_OLLAMA_API",
             "mflux": "ENABLE_MFLUX_IMAGE",
+            "vane": "ENABLE_VANE_SEARCH",
+            "opencode": "ENABLE_OPENCODE",
         }
 
         results: Dict[str, dict] = {}
@@ -118,8 +120,9 @@ def auto_register_all():
     from app.hands.ollama_hand import OllamaHand
     from app.hands.mflux_hand import MfluxHand
     from app.hands.vane_hand import VaneHand
+    from app.hands.opencode_hand import OpencodeHand
 
-    for HandClass in [GeminiHand, ClaudeHand, CodexHand, OllamaHand, MfluxHand, VaneHand]:
+    for HandClass in [GeminiHand, ClaudeHand, CodexHand, OllamaHand, MfluxHand, VaneHand, OpencodeHand]:
         hand_registry.register(HandClass())
 
     print(f"[HandRegistry] {len(hand_registry)} hands registered: {hand_registry.list_names()}")
