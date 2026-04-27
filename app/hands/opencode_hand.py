@@ -90,13 +90,17 @@ class OpencodeHand(Hand):
                     )
 
                 # 2. Send the prompt. POST /session/:id/message blocks until the
-                #    assistant finishes (per opencode docs).
+                #    assistant finishes (per opencode docs). opencode expects
+                #    `model` as an object {providerID, modelID}; convert if a
+                #    "provider/model" string was given. If `model` is omitted
+                #    entirely opencode falls back to its server default.
                 body: dict = {
                     "parts": [{"type": "text", "text": input}],
                     "noReply": False,
                 }
-                if model:
-                    body["model"] = model
+                model_obj = self._coerce_model(model)
+                if model_obj:
+                    body["model"] = model_obj
                 if agent:
                     body["agent"] = agent
                 if system:
@@ -160,6 +164,29 @@ class OpencodeHand(Hand):
 
         except Exception as e:
             return HandResult(output=f"opencode execution failed: {e}", exit_code=1)
+
+    # ─── model coercion ──────────────────────────
+    def _coerce_model(self, model: Any) -> Optional[dict]:
+        """opencode expects `model` as an object: {providerID, modelID}.
+
+        Accepts:
+          - dict  → returned as-is
+          - "provider/model" string → split on first '/'
+          - bare string (no '/') → returned as None so opencode uses its
+            server default (passing a bare string crashes with "expected
+            object, received string" on opencode's schema validator)
+          - None / empty → None (server default)
+        """
+        if not model:
+            return None
+        if isinstance(model, dict):
+            return model
+        if isinstance(model, str) and "/" in model:
+            provider, _, model_id = model.partition("/")
+            return {"providerID": provider, "modelID": model_id}
+        # Bare string (e.g. "gemma4:26b" from a leaked vane env var) — opencode
+        # will reject it; better to fall back to server default than 400.
+        return None
 
     # ─── text extraction ──────────────────────────
     def _extract_text(self, payload: Any) -> str:
