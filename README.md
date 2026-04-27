@@ -107,7 +107,7 @@ tail -f ~/.agent-route/task_puller.log
 | **ollama** | HTTP | Ollama running locally | `ENABLE_OLLAMA_API` |
 | **mflux** | HTTP | MFLUX on Apple Silicon | `ENABLE_MFLUX_IMAGE` |
 | **vane** | HTTP | Vane search instance | `ENABLE_VANE_SEARCH` |
-| **opencode** | HTTP | [opencode](https://opencode.ai) running in server mode | `ENABLE_OPENCODE` |
+| **opencode** | CLI | `opencode` binary on PATH ([install](https://opencode.ai/install)) | `ENABLE_OPENCODE` |
 
 ## Configuration
 
@@ -138,14 +138,11 @@ VANE_URL=http://localhost:3000
 VANE_CHAT_MODEL=gemma4:26b
 VANE_EMBED_MODEL=nomic-embed-text:latest
 
-# ─── OpenCode server mode (optional) ───
-# Run: opencode serve --port 4096   (set OPENCODE_SERVER_PASSWORD on the server)
-OPENCODE_URL=http://localhost:4096
-OPENCODE_USERNAME=opencode
-OPENCODE_PASSWORD=
+# ─── OpenCode CLI (optional) ───
+# Auth: ensure `opencode auth set <provider>` was run on this machine.
 OPENCODE_MODEL=                       # e.g. anthropic/claude-3-5-sonnet
 OPENCODE_AGENT=                       # optional, scopes tool access
-OPENCODE_TIMEOUT_S=600
+OPENCODE_TIMEOUT_S=600                # subprocess wall timeout
 
 # ─── Concurrency ───
 NODE_MAX_CONCURRENT=3                 # Max parallel tasks per node
