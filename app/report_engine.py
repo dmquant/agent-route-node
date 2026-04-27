@@ -70,26 +70,22 @@ def get_daily_stats(date_str: Optional[str] = None, days: int = 1) -> Dict[str, 
         })
         return result
 
-    # Sessions active in range
-    sessions = conn.execute(
-        'SELECT * FROM sessions WHERE updated_at >= ? AND created_at < ? ORDER BY updated_at DESC',
+    # Messages in range are the source of truth for daily activity. Do not
+    # pre-filter sessions by updated_at alone: a session updated today can
+    # otherwise leak into every earlier report window after its created_at.
+    messages = conn.execute(
+        'SELECT * FROM messages WHERE created_at >= ? AND created_at < ? ORDER BY created_at ASC',
         (start_ms, end_ms)
     ).fetchall()
-    session_ids = [s['id'] for s in sessions]
-
-    # Messages in range
+    session_ids = sorted({m['session_id'] for m in messages if m['session_id']})
     if session_ids:
         placeholders = ','.join('?' * len(session_ids))
-        messages = conn.execute(
-            f'SELECT * FROM messages WHERE session_id IN ({placeholders}) AND created_at >= ? AND created_at < ? ORDER BY created_at ASC',
-            (*session_ids, start_ms, end_ms)
+        sessions = conn.execute(
+            f'SELECT * FROM sessions WHERE id IN ({placeholders}) ORDER BY updated_at DESC',
+            tuple(session_ids)
         ).fetchall()
     else:
-        # Also check for messages directly by timestamp across all sessions
-        messages = conn.execute(
-            'SELECT * FROM messages WHERE created_at >= ? AND created_at < ? ORDER BY created_at ASC',
-            (start_ms, end_ms)
-        ).fetchall()
+        sessions = []
 
     # Aggregate by agent
     agent_breakdown = defaultdict(lambda: {"queries": 0, "responses": 0, "input_tokens": 0, "output_tokens": 0, "sessions": set()})
@@ -166,8 +162,8 @@ def get_daily_stats(date_str: Optional[str] = None, days: int = 1) -> Dict[str, 
         msg_count = conn.execute('SELECT COUNT(*) as c FROM messages WHERE session_id=? AND created_at >= ? AND created_at < ?', (sid, start_ms, end_ms)).fetchone()['c']
         if msg_count > 0:
             first_msg = conn.execute(
-                "SELECT content FROM messages WHERE session_id=? AND source='user' ORDER BY created_at ASC LIMIT 1",
-                (sid,)
+                "SELECT content FROM messages WHERE session_id=? AND source='user' AND created_at >= ? AND created_at < ? ORDER BY created_at ASC LIMIT 1",
+                (sid, start_ms, end_ms)
             ).fetchone()
             session_details.append({
                 "id": sid,
