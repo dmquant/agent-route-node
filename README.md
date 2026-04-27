@@ -50,6 +50,7 @@ ENABLE_CODEX_SERVER=true
 ENABLE_OLLAMA_API=false
 ENABLE_MFLUX_IMAGE=false
 ENABLE_VANE_SEARCH=false
+ENABLE_OPENCODE=false
 ```
 
 Only enabled hands will register with the orchestrator and receive tasks.
@@ -106,6 +107,7 @@ tail -f ~/.agent-route/task_puller.log
 | **ollama** | HTTP | Ollama running locally | `ENABLE_OLLAMA_API` |
 | **mflux** | HTTP | MFLUX on Apple Silicon | `ENABLE_MFLUX_IMAGE` |
 | **vane** | HTTP | Vane search instance | `ENABLE_VANE_SEARCH` |
+| **opencode** | HTTP | [opencode](https://opencode.ai) running in server mode | `ENABLE_OPENCODE` |
 
 ## Configuration
 
@@ -135,19 +137,34 @@ OLLAMA_MODEL=llama3.2
 VANE_URL=http://localhost:3000
 VANE_CHAT_MODEL=gemma4:26b
 VANE_EMBED_MODEL=nomic-embed-text:latest
+
+# ─── OpenCode server mode (optional) ───
+# Run: opencode serve --port 4096   (set OPENCODE_SERVER_PASSWORD on the server)
+OPENCODE_URL=http://localhost:4096
+OPENCODE_USERNAME=opencode
+OPENCODE_PASSWORD=
+OPENCODE_MODEL=                       # e.g. anthropic/claude-3-5-sonnet
+OPENCODE_AGENT=                       # optional, scopes tool access
+OPENCODE_TIMEOUT_S=600
+
+# ─── Concurrency ───
+NODE_MAX_CONCURRENT=3                 # Max parallel tasks per node
 ```
 
 ## How It Works
 
 Your edge node:
 - Registers enabled hands with the Agent Route cloud orchestrator
-- Polls for pending tasks every 5 seconds
-- Executes tasks locally via CLI subprocess or HTTP API
+- Polls for pending tasks every **15 seconds** (non-blocking)
+- Executes up to `NODE_MAX_CONCURRENT` (default **3**) tasks in parallel via
+  asyncio coroutines gated by a semaphore — a single slow CLI no longer
+  blocks polling or other tasks
 - Downloads workspace files from R2 before execution (cross-node context)
 - Uploads output files back to R2 after execution
 - Posts results back to the orchestrator
 - Sends heartbeats every 30s with load stats
-- One task per hand type runs at a time per node
+- Skips polling when already at concurrency capacity (avoids the worker
+  marking unrunnable tasks as `running`)
 
 ## Using Your Token
 
