@@ -1431,16 +1431,23 @@ async def execute_task(req: ExecutionRequest, request: Request):
     target_opt_kwargs = {}
     if req.client == "ollama":
         target_opt_kwargs["model"] = req.model or "llama3"
+    elif req.client in ("gemini", "claude", "codex") and req.model:
+        target_opt_kwargs["model"] = req.model
 
     result = await hand.execute(req.prompt, workspace_dir=workspace_dir, **target_opt_kwargs)
 
-    # Check for rate limit
-    from app.hands.base import check_rate_limit
-    wait_time = check_rate_limit(result.output)
-    if wait_time is not None:
-        hand_registry.mark_rate_limited(hand.name, wait_time)
+    # Check for rate limit using the per-CLI parser. We pass `hand.name`
+    # (the hand we actually ran on, after fallback) — not req.client — so
+    # cooldowns are recorded against the right hand.
+    from app.hands.rate_limit import parse_rate_limit
+    rl = parse_rate_limit(hand.name, result.output)
+    if rl is not None:
+        hand_registry.mark_rate_limited_from(rl)
         result.exit_code = 429
-        result.output = f"[RATE LIMITED] {hand.name} is paused for {wait_time}s. Original Output:\n{result.output}"
+        result.output = (
+            f"[RATE_LIMITED hand={rl.hand} retry_after_s={rl.retry_after_s} "
+            f"reason={rl.reason}]\n{result.output}"
+        )
 
     # ─── Record result into session ─────
     if session_id:
@@ -1493,6 +1500,8 @@ async def execute_task_stream(req: ExecutionRequest, request: Request):
     target_opt_kwargs = {}
     if req.client == "ollama":
         target_opt_kwargs["model"] = req.model or "llama3"
+    elif req.client in ("gemini", "claude", "codex") and req.model:
+        target_opt_kwargs["model"] = req.model
 
     async def worker():
         try:
@@ -1500,14 +1509,17 @@ async def execute_task_stream(req: ExecutionRequest, request: Request):
             result = await hand.execute(req.prompt, workspace_dir=workspace_dir, on_log=stream_log, **target_opt_kwargs)
             if result.image_b64:
                 await q.put({"type": "node_execution_image", "b64": result.image_b64})
-            # Check for rate limit
-            from app.hands.base import check_rate_limit
+            # Check for rate limit using the per-CLI parser
+            from app.hands.rate_limit import parse_rate_limit
             output_text = "".join(full_output)
-            wait_time = check_rate_limit(output_text)
-            if wait_time is not None:
-                hand_registry.mark_rate_limited(hand.name, wait_time)
+            rl = parse_rate_limit(hand.name, output_text)
+            if rl is not None:
+                hand_registry.mark_rate_limited_from(rl)
                 result.exit_code = 429
-                rate_str = f"\n\n[RATE LIMITED] {hand.name} is paused for {wait_time}s.\n"
+                rate_str = (
+                    f"\n\n[RATE_LIMITED hand={rl.hand} retry_after_s={rl.retry_after_s} "
+                    f"reason={rl.reason}]\n"
+                )
                 output_text += rate_str
                 await q.put({"type": "node_execution_log", "log": rate_str})
 

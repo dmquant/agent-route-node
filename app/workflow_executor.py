@@ -884,16 +884,20 @@ class WorkflowExecutor:
             step_end = int(time.time() * 1000)
             agent_output = "".join(full_output_chunks)
 
-            # ─── Check for Rate Limit ─────
-            from app.hands.base import check_rate_limit
-            wait_time = check_rate_limit(agent_output)
+            # ─── Check for Rate Limit (per-CLI parser) ─────
+            from app.hands.rate_limit import parse_rate_limit
+            rl = parse_rate_limit(hand.name, agent_output)
             is_rate_limited = False
-            
-            if wait_time is not None:
+            wait_time = rl.retry_after_s if rl else None
+
+            if rl is not None:
                 is_rate_limited = True
-                hand_registry.mark_rate_limited(hand.name, wait_time)
+                hand_registry.mark_rate_limited_from(rl)
                 result.exit_code = 429
-                result.output = f"[RATE LIMITED] {hand.name} is paused for {wait_time}s. Original Output:\n{agent_output}"
+                result.output = (
+                    f"[RATE_LIMITED hand={rl.hand} retry_after_s={rl.retry_after_s} "
+                    f"reason={rl.reason}]\n{agent_output}"
+                )
                 
                 # Fetch workflow_id to schedule retry
                 from app.workflow_store import get_run
