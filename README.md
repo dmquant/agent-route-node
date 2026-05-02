@@ -167,6 +167,11 @@ OPENCODE_MODEL=                       # e.g. anthropic/claude-3-5-sonnet
 OPENCODE_AGENT=                       # optional, scopes tool access
 OPENCODE_TIMEOUT_S=600                # subprocess wall timeout
 
+# ─── Default models (optional — overridden per task) ───
+GEMINI_DEFAULT_MODEL=                 # e.g. gemini-2.5-pro / gemini-2.5-flash
+CLAUDE_DEFAULT_MODEL=                 # e.g. claude-sonnet-4-7 / claude-haiku-4-5
+CODEX_DEFAULT_MODEL=                  # e.g. gpt-5-codex
+
 # ─── Concurrency ───
 NODE_MAX_CONCURRENT=3                 # Max parallel tasks per node
 ```
@@ -182,9 +187,115 @@ Your edge node:
 - Downloads workspace files from R2 before execution (cross-node context)
 - Uploads output files back to R2 after execution
 - Posts results back to the orchestrator
-- Sends heartbeats every 30s with load stats
+- Sends heartbeats every 30s with **load + per-hand availability**
 - Skips polling when already at concurrency capacity (avoids the worker
   marking unrunnable tasks as `running`)
+
+## Reliability — rate-limit detection & fallback
+
+The node parses each CLI's rate-limit signature, persists a cooldown to
+disk, and transparently falls back to a sibling hand within a coding
+group. Surviving a quota burn no longer requires manual intervention.
+
+### Per-CLI parsers
+
+| CLI | Recognized signatures | Reset source |
+|---|---|---|
+| **gemini** | `TerminalQuotaError ... Your quota will reset after Xh Ym Zs` · `429 RESOURCE_EXHAUSTED` | duration |
+| **claude** | `Claude AI usage limit reached. Your usage limit will reset at HH:MM (TZ)` · `rate_limit_error` · `Overloaded` | wall-clock + duration |
+| **codex** | `rate_limit_exceeded ... Please try again in Xs` · `Retry-After: N` · `429` | duration |
+
+Default fallback when a quota signature is detected but no time can be
+parsed: **5 hours**. This used to be 1h, which caused us to re-hit
+15-hour gemini quotas 14 hours early.
+
+### Persistent cooldown
+
+Cooldowns are written to `~/.agent-route/rate_limits.json`:
+
+```json
+{
+  "gemini": {
+    "until": 1777793591,
+    "reason": "quota_exhausted",
+    "marked_at": 1777737996
+  }
+}
+```
+
+The file is loaded on every startup. A node restart (intentional or
+otherwise) will not reset an active cooldown.
+
+### Automatic fallback chain
+
+The three coding CLIs are interchangeable for most prompts and form a
+fallback group:
+
+| Primary | Fallback order |
+|---|---|
+| `gemini` | `claude` → `codex` |
+| `claude` | `gemini` → `codex` |
+| `codex` | `claude` → `gemini` |
+
+When the requested hand is in cooldown (or not enabled, or unregistered),
+the puller picks the first available hand in the chain and runs the task
+there. Other hands (`vane`, `mflux`, `ollama`, `opencode`) have **no**
+default fallback — they're capability-specific.
+
+To opt out of fallback for a specific task and have it fail-fast on the
+requested hand, set `meta.fallback = false` in the task payload at the
+worker side. (The puller accepts both `task.meta.fallback` and a
+top-level `task.fallback`.)
+
+When ALL hands in the chain are exhausted, the puller posts `exit_code=429`
+with a structured prefix the worker can detect:
+
+```
+[RATE_LIMITED hand=gemini all_exhausted=true tried=gemini,claude,codex]
+All candidate hands are on cooldown.
+  gemini: cool until 2026-05-03T12:34:56 (reason=quota_exhausted)
+  claude: cool until 2026-05-03T14:00:00 (reason=usage_limit_wall_clock)
+  codex: cool until 2026-05-02T22:30:00 (reason=rate_limit_duration)
+```
+
+### Inspecting state
+
+```bash
+# Per-hand availability snapshot (live)
+curl http://localhost:8017/api/hands/status | jq
+
+# Manually clear a cooldown (ops escape hatch)
+curl -X POST http://localhost:8017/api/hands/gemini/cooldown/clear
+```
+
+The same status payload is sent on every heartbeat under `handStatus`,
+so the cloud worker can route around an exhausted hand without first
+needing to send a doomed task.
+
+## Per-task model selection
+
+The three CLI hands accept a `model` parameter on every execution. The
+puller forwards `task.model` (or `task.meta.model`) from the worker
+straight into the CLI invocation:
+
+| Hand | CLI flag | Examples |
+|---|---|---|
+| `gemini` | `--model <name>` | `gemini-2.5-pro` (default), `gemini-2.5-flash` |
+| `claude` | `--model <name>` | `claude-sonnet-4-7` (default), `claude-haiku-4-5`, `claude-opus-4-7` |
+| `codex` | `-m <name>` | `gpt-5-codex` (default), other OpenAI-compatible models |
+
+When omitted, each CLI uses its compiled-in default unless overridden by
+`{GEMINI,CLAUDE,CODEX}_DEFAULT_MODEL` in `~/.agent-route/.env`.
+
+Resolution order: per-request `model` parameter → env default → CLI default.
+
+Calling directly via `/execute`:
+
+```bash
+curl -sX POST http://localhost:8017/execute \
+  -H 'Content-Type: application/json' \
+  -d '{"client":"claude","prompt":"summarise this repo","model":"claude-haiku-4-5"}'
+```
 
 ## Using Your Token
 

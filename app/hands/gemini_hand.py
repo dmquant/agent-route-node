@@ -105,14 +105,16 @@ class GeminiHand(Hand):
         input: str,
         workspace_dir: str = "/tmp",
         on_log: Optional[Callable[[str], Any]] = None,
+        model: Optional[str] = None,
         **kwargs,
     ) -> HandResult:
         cmd = resolve_cli_path("npx")
-        args = [
-            "gemini", "-p", input,
-            "--output-format", "json",
-            "--yolo",
-        ]
+        args = ["gemini", "-p", input, "--output-format", "json", "--yolo"]
+        # Per-request model selection. Falls back to env (GEMINI_DEFAULT_MODEL),
+        # then to the CLI's compiled-in default (currently gemini-2.5-pro).
+        chosen_model = model or os.getenv("GEMINI_DEFAULT_MODEL")
+        if chosen_model:
+            args.extend(["--model", chosen_model])
         # Only include skills dir if it exists
         skills_dir = os.path.expanduser("~/.gemini/skills")
         if os.path.isdir(skills_dir):

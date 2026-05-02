@@ -153,10 +153,21 @@ async def _heartbeat_loop():
             except Exception:
                 pass
 
+            # Hand availability snapshot — lets the worker route around
+            # rate-limited hands without waiting for a doomed task to fail.
+            # Forward-compatible: workers that don't know this field
+            # ignore it.
+            hand_status = {}
+            try:
+                from app.hands.registry import hand_registry
+                hand_status = hand_registry.status_snapshot()
+            except Exception:
+                pass
+
             async with httpx.AsyncClient(timeout=5) as client:
                 await client.post(
                     f"{worker_url}/api/nodes/{node_id}/heartbeat",
-                    json={"activeTasks": active_tasks},
+                    json={"activeTasks": active_tasks, "handStatus": hand_status},
                     headers={
                         "Content-Type": "application/json",
                         "X-API-Key": auth_key,

@@ -513,6 +513,47 @@ async def api_hands_health():
     status = await hand_registry.health_check_all()
     return {"health": status}
 
+
+@app.get("/api/hands/status")
+def api_hands_status():
+    """Per-hand availability snapshot.
+
+    Returns enabled/registered/available + active cooldown info for every
+    registered hand, plus the configured fallback chains. Used by the CF
+    Worker to route around rate-limited hands and by the Workbench UI to
+    show a per-node hand-status board.
+
+    Shape:
+      {
+        "hands": {
+          "gemini": {
+            "registered": true,
+            "enabled": true,
+            "available": false,
+            "cooldown_until": 1777800000,
+            "retry_after_s": 55432,
+            "reason": "quota_exhausted",
+            "fallback_chain": ["claude", "codex"]
+          },
+          ...
+        }
+      }
+    """
+    return {"hands": hand_registry.status_snapshot()}
+
+
+@app.post("/api/hands/{name}/cooldown/clear")
+def api_clear_cooldown(name: str):
+    """Manually clear an active cooldown for a hand.
+
+    Mostly an ops escape hatch — use sparingly. The cooldown was set
+    because a real rate-limit was detected; clearing it just lets the
+    next task hit the same wall again.
+    """
+    info = hand_registry.cooldown_info(name)
+    hand_registry.clear_cooldown(name)
+    return {"cleared": info is not None, "hand": name, "previous": info}
+
 # ---------------------------------------------
 # 3c. Session Events API (Managed Agents Phase 2)
 # ---------------------------------------------

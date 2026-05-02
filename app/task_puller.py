@@ -59,32 +59,59 @@ async def _execute_one(task: dict, worker_url: str, auth_key: str) -> None:
     its own httpx client so the poll loop's client can be closed
     independently. Always removes itself from `_inflight_ids` on exit so a
     crashed task can't leak a slot.
+
+    Fallback semantics: if the requested hand is in cooldown (or not
+    enabled, or unregistered), we transparently route to a hand from
+    `DEFAULT_FALLBACK_CHAINS`. Set `task['meta']['fallback'] = false` on
+    the worker side to opt out — the original hand will be used and the
+    task will fail-fast if that hand is unavailable.
     """
-    from app.hands.registry import hand_registry
+    from app.hands.registry import hand_registry, DEFAULT_FALLBACK_CHAINS
+    from app.hands.rate_limit import parse_rate_limit
     from app.config import get_workspaces_dir
 
     task_id = task["id"]
     hand_name = task["hand_name"]
     prompt = task["prompt"]
     session_id = task.get("session_id")
+    # Optional per-task knobs. Worker may forward these in `meta` or as
+    # top-level fields — accept both for forward-compat.
+    meta = task.get("meta") or {}
+    requested_model = task.get("model") or meta.get("model")
+    allow_fallback = task.get("fallback", meta.get("fallback", True))
+    if isinstance(allow_fallback, str):
+        allow_fallback = allow_fallback.lower() not in ("false", "0", "no")
 
     sem = _ensure_sem()
     async with sem:
         start_time = datetime.now()
-        _logger.info(f"EXEC {task_id[:12]} | hand={hand_name} | prompt={prompt[:80]}...")
+        _logger.info(f"EXEC {task_id[:12]} | hand={hand_name} | model={requested_model or '(default)'} | prompt={prompt[:80]}...")
         print(f"[task-puller] Executing {task_id[:8]} ({hand_name})")
 
         exit_code = 1
         output = ""
         try:
             async with httpx.AsyncClient(timeout=30) as client:
-                hand = hand_registry.get(hand_name)
+                # Resolve the actual hand to run, applying cooldown +
+                # fallback chain. `tried` records every hand we examined.
+                hand, tried = hand_registry.resolve(hand_name, allow_fallback=allow_fallback)
                 if not hand:
-                    output = f"Hand '{hand_name}' not registered"
-                    _logger.error(f"FAIL {task_id[:12]} | {output}")
-                    print(f"[task-puller] {output}")
-                    await _post_result(client, worker_url, auth_key, task_id, 1, output)
+                    # Either nothing registered under that name OR everything
+                    # in the fallback chain is on cooldown. Surface a
+                    # structured 429-style result so the worker can decide
+                    # whether to re-queue or surface to the user.
+                    cd_summary = _cooldown_summary(hand_registry, [hand_name] + DEFAULT_FALLBACK_CHAINS.get(hand_name, []))
+                    output = (
+                        f"[RATE_LIMITED hand={hand_name} all_exhausted=true tried={','.join(tried)}]\n"
+                        f"All candidate hands are on cooldown.\n{cd_summary}"
+                    )
+                    _logger.warning(f"BLOCKED {task_id[:12]} | {output[:200]}")
+                    print(f"[task-puller] Task {task_id[:8]} blocked — all hands cool")
+                    await _post_result(client, worker_url, auth_key, task_id, 429, output)
                     return
+
+                if hand.name != hand_name:
+                    print(f"[task-puller] {hand_name} unavailable, executing on {hand.name} instead")
 
                 workspace_dir = os.path.join(get_workspaces_dir(), session_id or task_id)
                 os.makedirs(workspace_dir, exist_ok=True)
@@ -93,11 +120,14 @@ async def _execute_one(task: dict, worker_url: str, auth_key: str) -> None:
                 await _sync_workspace_from_r2(client, worker_url, auth_key, session_id or task_id, workspace_dir)
 
                 try:
-                    result = await hand.execute(prompt, workspace_dir=workspace_dir)
+                    exec_kwargs = {"workspace_dir": workspace_dir}
+                    if requested_model:
+                        exec_kwargs["model"] = requested_model
+                    result = await hand.execute(prompt, **exec_kwargs)
                     exit_code = result.exit_code
                     output = result.output
                     elapsed = (datetime.now() - start_time).total_seconds()
-                    _logger.info(f"DONE {task_id[:12]} | hand={hand_name} | exit={exit_code} | {elapsed:.1f}s | {len(output)} chars")
+                    _logger.info(f"DONE {task_id[:12]} | hand={hand.name} | exit={exit_code} | {elapsed:.1f}s | {len(output)} chars")
                     if exit_code != 0:
                         _logger.warning(f"FAIL {task_id[:12]} | output={output[:300]}")
                     print(f"[task-puller] Task {task_id[:8]} done (exit={exit_code}, {elapsed:.1f}s)")
@@ -105,8 +135,25 @@ async def _execute_one(task: dict, worker_url: str, auth_key: str) -> None:
                     exit_code = 1
                     output = str(e)
                     elapsed = (datetime.now() - start_time).total_seconds()
-                    _logger.error(f"ERROR {task_id[:12]} | hand={hand_name} | {elapsed:.1f}s | {e}")
+                    _logger.error(f"ERROR {task_id[:12]} | hand={hand.name} | {elapsed:.1f}s | {e}")
                     print(f"[task-puller] Task {task_id[:8]} failed: {e}")
+
+                # Detect rate-limit signature in the output and persist a
+                # cooldown so future tasks bypass this hand. We do this even
+                # for hands we fell back TO, not just the originally
+                # requested one.
+                rl = parse_rate_limit(hand.name, output)
+                if rl is not None:
+                    hand_registry.mark_rate_limited_from(rl)
+                    # Mark the result text with a structured prefix so the
+                    # worker (and humans reading the DB) can spot it.
+                    output = f"[RATE_LIMITED hand={rl.hand} retry_after_s={rl.retry_after_s} reason={rl.reason}]\n{output}"
+                    if exit_code == 0:
+                        # Some CLIs exit 0 even when the model errored — bump
+                        # to a non-zero so downstream treats it as a failure.
+                        exit_code = 429
+                    elif exit_code != 429:
+                        exit_code = 429
 
                 await _post_result(client, worker_url, auth_key, task_id, exit_code, output)
 
@@ -287,3 +334,17 @@ def stop_task_puller():
     if _puller_task:
         _puller_task.cancel()
         _puller_task = None
+
+
+def _cooldown_summary(registry, names: list[str]) -> str:
+    """One-line cooldown status for each name, used in 429 result text."""
+    lines = []
+    for n in names:
+        info = registry.cooldown_info(n)
+        if info is None:
+            lines.append(f"  {n}: available")
+        else:
+            from datetime import datetime as _dt
+            until = _dt.fromtimestamp(info["until"]).isoformat(timespec="seconds")
+            lines.append(f"  {n}: cool until {until} (reason={info.get('reason','?')})")
+    return "\n".join(lines)

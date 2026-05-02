@@ -31,11 +31,18 @@ class CodexHand(Hand):
         input: str,
         workspace_dir: str = "/tmp",
         on_log: Optional[Callable[[str], Any]] = None,
+        model: Optional[str] = None,
         **kwargs,
     ) -> HandResult:
         cmd = resolve_cli_path("npx")
         args = ["codex", "exec", "--skip-git-repo-check",
-                "--dangerously-bypass-approvals-and-sandbox", input]
+                "--dangerously-bypass-approvals-and-sandbox"]
+        # Per-request model selection. Falls back to env (CODEX_DEFAULT_MODEL),
+        # then to the CLI's default (currently gpt-5-codex).
+        chosen_model = model or os.getenv("CODEX_DEFAULT_MODEL")
+        if chosen_model:
+            args.extend(["-m", chosen_model])
+        args.append(input)
 
         os.makedirs(workspace_dir, exist_ok=True)
         await self._ensure_git(workspace_dir)

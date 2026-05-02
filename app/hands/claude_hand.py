@@ -32,10 +32,17 @@ class ClaudeHand(Hand):
         input: str,
         workspace_dir: str = "/tmp",
         on_log: Optional[Callable[[str], Any]] = None,
+        model: Optional[str] = None,
         **kwargs,
     ) -> HandResult:
         cmd = resolve_cli_path("npx")
-        args = ["@anthropic-ai/claude-code", "-p", "--dangerously-skip-permissions", input]
+        args = ["@anthropic-ai/claude-code", "-p", "--dangerously-skip-permissions"]
+        # Per-request model selection. Falls back to env (CLAUDE_DEFAULT_MODEL),
+        # then to the CLI's default (currently claude-sonnet-4-7).
+        chosen_model = model or os.getenv("CLAUDE_DEFAULT_MODEL")
+        if chosen_model:
+            args.extend(["--model", chosen_model])
+        args.append(input)
 
         os.makedirs(workspace_dir, exist_ok=True)
         await self._ensure_git(workspace_dir)
