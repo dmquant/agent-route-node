@@ -11,6 +11,30 @@ import httpx
 _heartbeat_task = None
 
 
+def _apply_pending_command(cmd: dict) -> None:
+    """Apply one operator-queued command shipped via the heartbeat response.
+
+    All commands MUST be idempotent — a flaky network may deliver the
+    same command twice. clear_cooldown is naturally idempotent (a no-op
+    if there's no active cooldown). Add new ops here as they're needed.
+    """
+    if not isinstance(cmd, dict):
+        return
+    op = cmd.get("op")
+    if op == "clear_cooldown":
+        hand = cmd.get("hand")
+        if not hand:
+            return
+        try:
+            from app.hands.registry import hand_registry
+            hand_registry.clear_cooldown(hand)
+            print(f"[heartbeat] applied: clear_cooldown hand={hand}")
+        except Exception as e:
+            print(f"[heartbeat] clear_cooldown failed for {hand}: {e}")
+    else:
+        print(f"[heartbeat] unknown command op={op!r} (ignored)")
+
+
 def _get_config():
     return {
         "worker_url": os.getenv("CF_WORKER_URL", ""),
@@ -153,26 +177,35 @@ async def _heartbeat_loop():
             except Exception:
                 pass
 
-            # Hand availability snapshot — lets the worker route around
-            # rate-limited hands without waiting for a doomed task to fail.
-            # Forward-compatible: workers that don't know this field
-            # ignore it.
-            hand_status = {}
-            try:
-                from app.hands.registry import hand_registry
-                hand_status = hand_registry.status_snapshot()
-            except Exception:
-                pass
+            # Note: hand availability is reported reactively via the
+            # task-complete callback's structured [RATE_LIMITED ...] prefix,
+            # not pushed here. Avoids ~100K/day of redundant D1 writes for
+            # hands that aren't even cool. The cost is exactly one failed
+            # task per quota event before the worker learns to route around
+            # it — which it would have done at the next heartbeat anyway.
+            # Local /api/hands/status remains available for ops/UI use.
 
             async with httpx.AsyncClient(timeout=5) as client:
-                await client.post(
+                resp = await client.post(
                     f"{worker_url}/api/nodes/{node_id}/heartbeat",
-                    json={"activeTasks": active_tasks, "handStatus": hand_status},
+                    json={"activeTasks": active_tasks},
                     headers={
                         "Content-Type": "application/json",
                         "X-API-Key": auth_key,
                     },
                 )
+
+                # Reverse channel: the worker's heartbeat response carries
+                # any commands queued for this node (e.g. cooldown clears
+                # triggered from the dashboard). Apply them locally so
+                # operators can clear stuck cooldowns without SSHing in.
+                if resp.status_code == 200:
+                    try:
+                        data = resp.json() or {}
+                        for cmd in data.get("pendingCommands") or []:
+                            _apply_pending_command(cmd)
+                    except Exception as e:
+                        print(f"[heartbeat] command-apply error: {e}")
         except Exception:
             pass
 
