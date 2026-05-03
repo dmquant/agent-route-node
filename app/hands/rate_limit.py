@@ -213,9 +213,12 @@ def _parse_codex(output: str) -> Optional[RateLimitInfo]:
                 reason="rate_limit_duration",
             )
 
-    # Single-unit phrasing
+    # Single-unit phrasing — only paired with a rate-limit *signature*,
+    # never bare keywords like "rate" (matches "generate", "iterate") or
+    # "429" (matches every date YYYY0429 or numeric value containing
+    # 429). Use the same strict signature set as the no-ETA fallback.
     m = _RETRY_DURATION.search(output)
-    if m and any(k in low for k in ("rate", "429", "quota", "exceeded", "exhausted")):
+    if m and _has_codex_ratelimit_signature(low):
         wait = _seconds_from_unit(float(m.group(1)), m.group(2))
         return RateLimitInfo(
             hand="codex",
@@ -235,7 +238,11 @@ def _parse_codex(output: str) -> Optional[RateLimitInfo]:
             reason="retry_after_header",
         )
 
-    if any(k in low for k in ("rate_limit_exceeded", "429", "too many requests", "quota")):
+    # No-ETA fallback: only fire when the output carries an unambiguous
+    # rate-limit signature. Loose substring tests (bare "429", bare
+    # "quota") matched dates/prices/prose and pinned hands for 5h on
+    # what were ordinary research outputs — see the gubei12 incident.
+    if _has_codex_ratelimit_signature(low):
         return RateLimitInfo(
             hand="codex",
             retry_after_s=DEFAULT_FALLBACK_S,
@@ -243,6 +250,35 @@ def _parse_codex(output: str) -> Optional[RateLimitInfo]:
             reason="rate_limited_no_eta",
         )
     return None
+
+
+# Codex rate-limit signatures must be specific enough to never match
+# inside ordinary prose, citations, or numeric data. We require either:
+#   - a literal multi-word phrase that is genuinely diagnostic, or
+#   - a word-boundary keyword paired with HTTP/quota context.
+_CODEX_RL_PHRASES = (
+    "rate_limit_exceeded",
+    "rate limit exceeded",
+    "too many requests",
+    "quota_exceeded",
+    "quota exceeded",
+    "quota_exhausted",
+    "insufficient_quota",
+    "ratelimitexceeded",
+)
+_CODEX_429_RE = re.compile(
+    r"(?:\bhttp\b[^\n]{0,20}\b429\b|\b429\b[^\n]{0,20}(?:too\s+many\s+requests|rate[\s_-]?limit))",
+    re.IGNORECASE,
+)
+
+
+def _has_codex_ratelimit_signature(low: str) -> bool:
+    if any(p in low for p in _CODEX_RL_PHRASES):
+        return True
+    # Bare 429 only counts if it is adjacent to HTTP / rate-limit context
+    # within ~20 chars on either side. This rules out date strings like
+    # "20260429" and citation URLs.
+    return bool(_CODEX_429_RE.search(low))
 
 
 def _parse_vane(output: str) -> Optional[RateLimitInfo]:
