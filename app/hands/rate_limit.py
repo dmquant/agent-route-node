@@ -273,12 +273,19 @@ _CODEX_429_RE = re.compile(
 
 
 def _has_codex_ratelimit_signature(low: str) -> bool:
-    if any(p in low for p in _CODEX_RL_PHRASES):
+    # Only inspect the tail of the output. When codex itself hits a
+    # rate limit, it bails out and that error is the LAST thing on
+    # stdout. When a downstream tool (e.g. a yfinance HTTP call inside
+    # a codex-driven script) returns 429, that line is mid-output and
+    # codex keeps going. Without this restriction we falsely cooled
+    # codex on every research output that mentioned an upstream 429.
+    tail = low[-2000:]
+    if any(p in tail for p in _CODEX_RL_PHRASES):
         return True
     # Bare 429 only counts if it is adjacent to HTTP / rate-limit context
     # within ~20 chars on either side. This rules out date strings like
     # "20260429" and citation URLs.
-    return bool(_CODEX_429_RE.search(low))
+    return bool(_CODEX_429_RE.search(tail))
 
 
 def _parse_vane(output: str) -> Optional[RateLimitInfo]:
