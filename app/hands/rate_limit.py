@@ -245,43 +245,63 @@ def _parse_codex(output: str) -> Optional[RateLimitInfo]:
     return None
 
 
+def _parse_vane(output: str) -> Optional[RateLimitInfo]:
+    """Vane wrapper-level errors only.
+
+    Vane returns full Markdown search answers on success — those answers
+    are user-prose and can contain any keyword (including "rate limit",
+    "quota", "429") about totally unrelated topics. To avoid false
+    positives we ONLY match the wrapper's own error formatting:
+
+      "Vane API error 429: ..."
+      "Vane API error 503: ..."
+      "Failed to get Vane providers"
+      "No models available from Vane provider"
+      "Vane search failed: ..."
+
+    The vane_hand internally retries SearXNG rate-limits up to 3 times
+    before surfacing a wrapper error, so by the time we see one of these
+    messages the upstream really is unavailable.
+    """
+    # Only match at the very start of the output to avoid catching the
+    # word "Vane" inside a search-result answer.
+    head = output.lstrip()[:120]
+    if not head.startswith(("Vane API error", "Vane search failed",
+                            "Failed to get Vane providers",
+                            "No models available from Vane")):
+        return None
+    # Try to extract an HTTP code; treat 429 / 503 / 504 as transient.
+    m = re.search(r"Vane API error (\d{3})", head)
+    code = int(m.group(1)) if m else 0
+    if code and code not in (429, 502, 503, 504):
+        return None  # other 4xx/5xx are not rate-limit shaped
+    return RateLimitInfo(
+        hand="vane",
+        retry_after_s=DEFAULT_FALLBACK_S,
+        reset_at_unix=int(time.time()) + DEFAULT_FALLBACK_S,
+        reason=f"vane_upstream_{code}" if code else "vane_unavailable",
+    )
+
+
 _PARSERS = {
     "gemini": _parse_gemini,
     "claude": _parse_claude,
     "codex":  _parse_codex,
+    "vane":   _parse_vane,
 }
 
 
 def parse_rate_limit(hand_name: str, output: str) -> Optional[RateLimitInfo]:
     """Return RateLimitInfo if `output` looks rate-limited, else None.
 
-    Dispatches to the per-CLI parser when one exists; otherwise runs a
-    generic check that recognises any of the common quota keywords plus a
-    duration phrase, and falls back to DEFAULT_FALLBACK_S if no time
-    component can be extracted.
+    Strictly per-hand: only hands listed in `_PARSERS` are checked.
+    There is intentionally NO generic backstop — running a keyword
+    sniffer over arbitrary CLI output (search results, prose, code)
+    produces false positives at a rate that's worse than just letting
+    the next task discover the rate-limit on its own. Hands that need
+    rate-limit handling opt in by registering a dedicated parser.
     """
     if not output:
         return None
-
     parser = _PARSERS.get(hand_name)
-    if parser is not None:
-        return parser(output)
-
-    # Generic backstop for hands without a dedicated parser.
-    low = output.lower()
-    if not any(k in low for k in _QUOTA_KEYWORDS):
-        return None
-    m = _RETRY_DURATION.search(output) or _RETRY_AFTER_HEADER.search(output)
-    if m:
-        if m.re is _RETRY_AFTER_HEADER:
-            wait = int(float(m.group(1)))
-        else:
-            wait = _seconds_from_unit(float(m.group(1)), m.group(2))
-    else:
-        wait = DEFAULT_FALLBACK_S
-    return RateLimitInfo(
-        hand=hand_name or "unknown",
-        retry_after_s=wait,
-        reset_at_unix=int(time.time()) + wait,
-        reason="generic_rate_limit",
-    )
+    return parser(output) if parser else None
