@@ -13,8 +13,15 @@ or a RateLimitInfo with the wait window expressed both as a duration
 (`retry_after_s`) and an absolute reset time (`reset_at_unix`).
 
 When a quota signature is detected but no time can be extracted, we fall
-back to **5 hours**. This is intentionally generous: the previous default
-of 1 hour caused us to re-hit a 15-hour gemini cooldown 14 hours early.
+back to **30 minutes**. The longer 5h fallback we used previously was
+correct for genuine daily-quota exhaustion but wrong for the much more
+common case of transient capacity overload (Google's "No capacity
+available for model X" RESOURCE_EXHAUSTED, Claude/codex 503-shaped
+errors). The cost of being too short is one re-discovery per 30min if
+the real wait is longer; the cost of being too long is unused capacity
+sitting idle for hours. Genuine long quotas (gemini's "reset after
+Xh Ym Zs", Claude's "reset at HH:MM") still produce precise ETAs via
+the duration parsers above and never hit this fallback.
 """
 
 from __future__ import annotations
@@ -25,12 +32,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-# When a rate-limit signature is detected but the reset time cannot be
-# parsed from the output, fall back to this many seconds. Five hours is
-# the rolling window used by Claude's free tier and is a safe default for
-# all three CLIs — we'd rather sit on a hand a bit too long than re-hit
-# an exhausted quota and cement the cooldown.
-DEFAULT_FALLBACK_S = 5 * 3600
+# Fallback when a rate-limit signature is detected but the reset time
+# cannot be parsed. 30 min balances the two failure modes: re-discover
+# the rate limit if real wait is longer (one wasted task per 30min) vs.
+# leaving capacity idle for hours when the real cause was transient
+# overload. Genuine long quotas have parseable ETAs in the output and
+# never reach this fallback.
+DEFAULT_FALLBACK_S = 30 * 60
 
 
 @dataclass
