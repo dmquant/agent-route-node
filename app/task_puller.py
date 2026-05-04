@@ -35,6 +35,19 @@ MAX_CONCURRENT = int(os.getenv("NODE_MAX_CONCURRENT", "3"))
 _executor_sem: asyncio.Semaphore | None = None
 _inflight_ids: set[str] = set()
 
+
+def get_inflight_count() -> int:
+    """Number of tasks the puller is currently executing.
+
+    Public accessor so the heartbeat (edge_register.py) can report a load
+    figure that includes puller-driven work. The puller has its own
+    concurrency tracking separate from app.tasks.task_manager (which only
+    counts direct /execute and workflow calls), so without this the
+    worker's edge_nodes.current_load shows 0/3 even when the puller is
+    saturated.
+    """
+    return len(_inflight_ids)
+
 # File logger
 _log_file = os.path.join(get_data_dir(), "task_puller.log")
 _logger = logging.getLogger("task_puller")

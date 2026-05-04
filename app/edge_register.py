@@ -169,11 +169,22 @@ async def _heartbeat_loop():
             if not node_id or not auth_key:
                 continue
 
-            # Collect load stats
+            # Collect load stats from BOTH execution paths:
+            #   1. task_manager — direct /execute and workflow calls
+            #   2. task_puller — work pulled from the worker queue
+            # These are tracked separately inside api_bridge. Reporting
+            # only #1 made current_load look like 0/3 even when the
+            # puller was saturated, breaking the worker's load-aware
+            # routing and the dashboard's capacity display.
             active_tasks = 0
             try:
                 from app.tasks import task_manager
-                active_tasks = len(task_manager.get_all_status())
+                active_tasks += len(task_manager.get_all_status())
+            except Exception:
+                pass
+            try:
+                from app.task_puller import get_inflight_count
+                active_tasks += get_inflight_count()
             except Exception:
                 pass
 
