@@ -57,9 +57,25 @@ Only enabled hands will register with the orchestrator and receive tasks.
 
 ### 4. Start the node
 
+Foreground (terminal stays attached):
+
 ```bash
 agent-route-node start
 ```
+
+Background (detached — survives terminal close):
+
+```bash
+nohup agent-route-node start > ~/.agent-route/api_bridge.log 2>&1 < /dev/null &
+```
+
+> **Don't use `--reload` for backgrounded runs.** It enables uvicorn's
+> source-watcher, whose supervisor needs a tty and exits on SIGHUP — the
+> service dies as soon as the launching shell closes. `--reload` is only
+> for active local development. The same applies to `./start.sh`:
+> default is no reload; pass `./start.sh --dev` to opt in.
+
+For a permanent daemon on macOS, see [Run as a launchd service](#run-as-a-launchd-service-macos) below.
 
 ### 5. Check status
 
@@ -78,7 +94,49 @@ cd ~/.agent-route/node && ./stop.sh
 ### 7. Update to latest version
 
 ```bash
-cd ~/.agent-route/node && git pull && ./stop.sh && ./start.sh
+cd ~/.agent-route/node && git pull
+agent-route-node stop
+nohup agent-route-node start > ~/.agent-route/api_bridge.log 2>&1 < /dev/null &
+```
+
+### Run as a launchd service (macOS)
+
+For an always-on edge node, install a LaunchAgent so the service starts at
+login and auto-restarts on crash. Save the following to
+`~/Library/LaunchAgents/com.dmquant.agent-route-node.plist` (replace
+`USERNAME`):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>            <string>com.dmquant.agent-route-node</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/USERNAME/.local/bin/agent-route-node</string>
+        <string>start</string>
+    </array>
+    <key>RunAtLoad</key>        <true/>
+    <key>KeepAlive</key>        <true/>
+    <key>StandardOutPath</key>  <string>/Users/USERNAME/.agent-route/api_bridge.log</string>
+    <key>StandardErrorPath</key><string>/Users/USERNAME/.agent-route/api_bridge.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>         <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
+```
+
+Then:
+
+```bash
+launchctl load -w ~/Library/LaunchAgents/com.dmquant.agent-route-node.plist
+launchctl list | grep agent-route-node     # verify
+# stop / start later:
+launchctl unload ~/Library/LaunchAgents/com.dmquant.agent-route-node.plist
+launchctl load   ~/Library/LaunchAgents/com.dmquant.agent-route-node.plist
 ```
 
 ### 8. Diagnostics

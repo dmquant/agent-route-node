@@ -40,7 +40,7 @@ async def main():
                 print(f"Discovered hands: {[h['name'] for h in hands]}")
     except Exception as e:
         print(f"Could not probe local bridge at {args.node_url}: {e}")
-        print("Make sure the API bridge is running (./start.sh)")
+        print("Make sure the API bridge is running (agent-route-node start)")
         sys.exit(1)
 
     if not hands:

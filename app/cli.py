@@ -4,7 +4,8 @@ CLI entry point for agent-route-node.
 
 Usage:
     agent-route-node register --worker-url URL --admin-key KEY [--name NAME]
-    agent-route-node start [--port PORT]
+    agent-route-node start [--port PORT] [--reload]
+    agent-route-node stop
     agent-route-node status
 """
 import argparse
@@ -165,8 +166,39 @@ def cmd_start(args):
     port = args.port or int(os.getenv("NODE_URL", "http://localhost:8017").rsplit(":", 1)[-1])
 
     import uvicorn
-    print(f"[agent-route-node] Starting on port {port}...")
+    # --reload is dev-only — its supervisor forks a child and watches the
+    # source tree; backgrounding it (nohup/launchd/systemd) causes the
+    # supervisor to exit on first SIGHUP. Default off.
+    print(f"[agent-route-node] Starting on port {port}{' (reload)' if args.reload else ''}...")
     uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=args.reload)
+
+
+def cmd_stop(args):
+    """Stop the edge node by port (matches stop.sh behavior)."""
+    from app.config import get_env_path
+    from dotenv import load_dotenv
+    load_dotenv(dotenv_path=get_env_path())
+
+    import signal
+    import subprocess
+
+    port = args.port or int(os.getenv("NODE_URL", "http://localhost:8017").rsplit(":", 1)[-1])
+
+    try:
+        pids = subprocess.check_output(["lsof", "-ti", f":{port}"], text=True).split()
+    except subprocess.CalledProcessError:
+        pids = []
+
+    if not pids:
+        print(f"[agent-route-node] Not running (port {port})")
+        return
+
+    for pid in pids:
+        try:
+            os.kill(int(pid), signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    print(f"[agent-route-node] Stopped (port {port}, pids: {','.join(pids)})")
 
 
 def cmd_status(args):
@@ -246,6 +278,10 @@ def main():
     st.add_argument("--port", type=int, help="Port (default: from .env or 8017)")
     st.add_argument("--reload", action="store_true", help="Enable auto-reload for development")
 
+    # stop
+    sp = sub.add_parser("stop", help="Stop the edge node service")
+    sp.add_argument("--port", type=int, help="Port (default: from .env or 8017)")
+
     # status
     sub.add_parser("status", help="Check node and connection status")
 
@@ -254,6 +290,8 @@ def main():
         cmd_register(args)
     elif args.command == "start":
         cmd_start(args)
+    elif args.command == "stop":
+        cmd_stop(args)
     elif args.command == "status":
         cmd_status(args)
     else:

@@ -32,6 +32,14 @@ set +a
 PORT="${NODE_URL##*:}"
 PORT="${PORT:-8017}"
 
-echo "[api_bridge] env=$ENV_FILE | port=$PORT | data=$AGENT_ROUTE_HOME"
+# --reload is dev-only — uvicorn's reloader supervisor needs a tty,
+# so backgrounded runs (nohup, launchd, systemd) exit on first SIGHUP.
+# Default off; opt in with `start.sh --dev` or API_BRIDGE_DEV=1.
+RELOAD_FLAG=""
+if [ "${1:-}" = "--dev" ] || [ "${API_BRIDGE_DEV:-}" = "1" ]; then
+    RELOAD_FLAG="--reload"
+fi
+
+echo "[api_bridge] env=$ENV_FILE | port=$PORT | data=$AGENT_ROUTE_HOME${RELOAD_FLAG:+ | reload=on}"
 export AGENT_ROUTE_HOME
-.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port "$PORT" --reload
+exec .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port "$PORT" $RELOAD_FLAG
