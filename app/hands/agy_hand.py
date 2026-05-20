@@ -5,9 +5,10 @@ The `agy` binary is Google Antigravity's CLI, slated to replace the legacy
 binary (not npx), authenticates via OS keyring, and emits plain markdown
 on stdout (no --output-format json).
 
-This hand runs `agy --print --dangerously-skip-permissions` per task and
-streams stderr in real-time for progress. Model selection happens inside
-agy's stored config — there is no per-invocation --model flag.
+This hand runs `agy --add-dir <ws> --print <prompt>` per task (stdin sent to
+/dev/null so agy can't block on an interactive read), and streams stderr in
+real-time for progress. Model selection happens inside agy's stored config —
+there is no per-invocation --model flag.
 
 Two agy quirks need special handling so output rides the CF workspace sync:
 
@@ -31,6 +32,17 @@ from typing import Optional, Callable, Any
 
 from app.hands.base import Hand, HandResult, filter_noise, resolve_cli_path, get_cli_env
 from app.hands.stream_processor import AgyStreamProcessor
+
+
+# agy does NOT tolerate concurrent invocations: instances share one
+# ~/.gemini/antigravity-cli data dir, a language-server port, and the OS
+# keyring. Running two at once makes one stall with an empty log (the
+# "auth timeout" the institute saw) and/or makes agy abandon --add-dir and
+# dump output into its scratch dir. We serialize all agy runs on a node with
+# this process-wide lock (the edge node is a single uvicorn process, so an
+# asyncio.Lock is sufficient). Throughput cost is acceptable — correctness
+# over speed; scale out with more nodes if needed.
+_AGY_LOCK = asyncio.Lock()
 
 
 def _agy_data_root() -> str:
@@ -76,12 +88,16 @@ class AgyHand(Hand):
         await self._ensure_git(workspace_dir)
 
         cmd = resolve_cli_path("agy")
-        # CRITICAL: `--print` (a.k.a. `--prompt`) is a value-taking flag — it
-        # consumes the NEXT token as the prompt. So every other flag MUST come
-        # before it, and the actual prompt MUST be its immediate value. Passing
-        # `--print` before other flags makes agy treat the next flag string as
-        # the prompt and silently drop the real input.
-        args = ["--dangerously-skip-permissions"]
+        # NOTE on flags:
+        #  - We do NOT pass --dangerously-skip-permissions. It doesn't actually
+        #    bypass agy's core tool review in print mode (agy says so itself),
+        #    and it nudges agy toward interactive confirmation code paths. The
+        #    behaviour matrix showed agy writes files reliably WITHOUT it.
+        #  - `--print` (a.k.a. `--prompt`) is a value-taking flag — it consumes
+        #    the NEXT token as the prompt. So every other flag MUST come before
+        #    it, and the prompt MUST be its immediate value, or agy treats the
+        #    next flag string as the prompt and drops the real input.
+        args: list[str] = []
 
         # agy print mode ignores cwd for workspace context — it needs an
         # explicit --add-dir to know where to read/write files. Without it,
@@ -93,10 +109,15 @@ class AgyHand(Hand):
         # If a caller passes `model=`, we record it for traceability but
         # don't forward it to the subprocess.
 
-        # Per-request timeout — agy default is 5m. Allow override via env.
-        timeout_s = os.getenv("AGY_PRINT_TIMEOUT", "")
-        if timeout_s:
-            args.extend(["--print-timeout", timeout_s])
+        # Per-request timeout. agy's built-in --print-timeout default is only
+        # 5m, which cuts off heavy bilingual research BEFORE it writes its
+        # files — the model streams a partial summary and exits, so no report
+        # lands on disk (the failure the institute saw). Default to 1800s
+        # (30m). Override via AGY_PRINT_TIMEOUT (accepts Go duration, e.g.
+        # "1800s" or "30m"). NOTE: keep this <= the worker's 30-min zombie
+        # reaper so a legit long run finishes + syncs before being reaped.
+        timeout_s = os.getenv("AGY_PRINT_TIMEOUT", "1800s")
+        args.extend(["--print-timeout", timeout_s])
 
         # Capture agy's internal logs to a tmpfile so they don't pollute
         # the workspace and so we can clean up after.
@@ -114,13 +135,29 @@ class AgyHand(Hand):
                 note += f" — requested model `{model}` (note: agy ignores per-call model)"
             await on_log(json.dumps({"chunkType": "progress", "content": note}))
 
-        # Timestamp just before spawn — the lower bound for scavenging any
-        # run-fresh files agy drops in its scratch dir (see _capture_artifacts).
+        # Serialize: only one agy subprocess runs per node at a time. Held
+        # through artifact capture so the scratch scan sees only this run's
+        # files. Acquired here (not earlier) so the cheap setup above isn't
+        # serialized. started_at is taken after acquire so the scratch
+        # mtime filter excludes any prior serialized run's files.
+        if on_log and _AGY_LOCK.locked():
+            await on_log(json.dumps({
+                "chunkType": "system",
+                "content": "⏳ agy busy on this node — queued (agy runs serially)",
+            }))
+        await _AGY_LOCK.acquire()
         started_at = time.time()
 
         try:
             process = await asyncio.create_subprocess_exec(
                 cmd, *args,
+                # CRITICAL: redirect stdin to /dev/null. Without this the child
+                # inherits the node process's stdin; agy's print mode does a
+                # blocking read() on stdin at startup and, with an open/empty
+                # stdin, hangs forever — a 0-byte log, ~0 CPU stall (the
+                # "auth timeout" the institute saw). DEVNULL makes that read
+                # return EOF immediately, so agy proceeds non-interactively.
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workspace_dir,
@@ -131,6 +168,7 @@ class AgyHand(Hand):
             if on_log:
                 await on_log(json.dumps({"chunkType": "error", "content": msg}))
             _safe_unlink(log_path)
+            _AGY_LOCK.release()
             return HandResult(output=msg, exit_code=1)
 
         processor = AgyStreamProcessor()
@@ -175,7 +213,9 @@ class AgyHand(Hand):
             await asyncio.gather(stream_stderr(), read_stdout())
             exit_code = await process.wait()
         finally:
-            # Capture artifacts BEFORE deleting the log (we need the conv-id).
+            # Capture artifacts BEFORE deleting the log (we need the conv-id)
+            # and BEFORE releasing the lock (so the scratch scan isn't racing
+            # the next serialized agy run).
             if os.getenv("AGY_CAPTURE_ARTIFACTS", "true") != "false":
                 try:
                     conv_id = _parse_conversation_id(log_path)
@@ -185,6 +225,7 @@ class AgyHand(Hand):
                 except Exception:
                     pass
             _safe_unlink(log_path)
+            _AGY_LOCK.release()
 
         raw_stdout = ''.join(raw_stdout_chunks)
         output_text = filter_noise(raw_stdout).strip()
@@ -255,14 +296,21 @@ def _capture_artifacts(
       • brain artifacts  → ~/.gemini/antigravity-cli/brain/<conv-id>/*.md
                            copied into workspace_dir/agy_artifacts/
       • scratch fallback → ~/.gemini/antigravity-cli/scratch/** files whose
-                           mtime is newer than this run's start (a safety net
-                           for the case where agy bypasses --add-dir). Copied
-                           into workspace_dir/agy_scratch/ preserving subpaths.
+                           mtime is newer than this run's start. agy often
+                           ignores --add-dir under load and writes the real
+                           deliverable here, so we MIRROR these to the
+                           workspace ROOT (preserving subpaths) — NOT into a
+                           prefixed subdir. The institute reads reports at
+                           whiteboard/<board>/card-NN/report.zh.md; parking
+                           them under agy_scratch/ made them invisible (the
+                           bug behind the 404s). Board-ids are unique per
+                           session, so root-mirroring won't collide across
+                           sessions, and the skip-if-exists guard protects
+                           anything agy already wrote to the workspace.
 
-    NOTE: the scratch scan is mtime-scoped to this run; on a node executing
-    multiple agy tasks concurrently it could in theory grab a sibling run's
-    fresh file. That's an accepted trade-off — the primary path (--add-dir)
-    keeps scratch empty, so this only fires on the rare fallback.
+    NOTE: scratch scan is mtime-scoped to this run. Concurrent agy runs are
+    serialized by _AGY_LOCK in execute(), so scratch holds only this run's
+    files during the scan.
     """
     captured: list[str] = []
     walkthrough_text: Optional[str] = None
@@ -306,16 +354,16 @@ def _capture_artifacts(
                 except OSError:
                     continue
                 rel = os.path.relpath(src, scratch_dir)
-                # Skip if an identically-named file already exists at the
-                # workspace root (agy wrote it there directly via --add-dir).
-                if os.path.exists(os.path.join(workspace_dir, rel)):
+                dst = os.path.join(workspace_dir, rel)
+                # Don't clobber a file agy already wrote to the workspace
+                # directly (via --add-dir) — that copy is authoritative.
+                if os.path.exists(dst):
                     continue
-                dst = os.path.join(workspace_dir, "agy_scratch", rel)
                 try:
                     os.makedirs(os.path.dirname(dst), exist_ok=True)
                     with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
                         fdst.write(fsrc.read())
-                    captured.append(os.path.join("agy_scratch", rel))
+                    captured.append(rel)
                 except OSError:
                     pass
 

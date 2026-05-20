@@ -70,7 +70,9 @@ class HarnessManager:
             max_context_tokens=1_000_000,
             auto_compact=False,
             compact_threshold=0.9,
-            timeout_seconds=300,             # agy spawns LSP + auth; allow more
+            # agy spawns an LSP + does heavy bilingual research before writing
+            # files; the hand sets agy's own --print-timeout to 1800s to match.
+            timeout_seconds=1800,
             env_gate="ENABLE_AGY_CLI",
         )
         self._configs["claude"] = HarnessConfig(
