@@ -13,6 +13,7 @@ from pathlib import Path
 # ─── Skill Directory Locations ──────────────────
 SKILL_DIRS = {
     "gemini":  os.path.expanduser("~/.gemini/skills"),
+    "agy":     os.path.expanduser("~/.gemini/skills"),
     "claude":  os.path.expanduser("~/.claude/skills"),
     "codex":   os.path.expanduser("~/.codex/skills"),
 }
@@ -161,6 +162,12 @@ def get_agent_config(agent: str) -> Dict[str, Any]:
         config["model"] = "gemini-2.5-pro"
         config["provider"] = "Google DeepMind"
 
+    elif agent == "agy":
+        # Antigravity stores its config under ~/.gemini/antigravity-cli;
+        # model selection is set inside the agy app, not per-call.
+        config["model"] = "gemini-3 (agy default)"
+        config["provider"] = "Google Antigravity"
+
     elif agent == "claude":
         if os.path.isfile(CLAUDE_SETTINGS_PATH):
             try:
@@ -208,6 +215,7 @@ def get_agent_status(agent: str) -> str:
     """Check if an agent is enabled and reachable."""
     env_map = {
         "gemini": "ENABLE_GEMINI_CLI",
+        "agy":    "ENABLE_AGY_CLI",
         "claude": "ENABLE_CLAUDE_REMOTE_CONTROL",
         "codex": "ENABLE_CODEX_SERVER",
         "ollama": "ENABLE_OLLAMA_API",
@@ -232,6 +240,16 @@ def get_all_agents() -> List[Dict[str, Any]]:
             "color": "#4285f4",
             "icon": "sparkles",
             "description": "Google DeepMind's Gemini model via CLI. Best for code generation, multi-modal reasoning, and agentic tool use with MCP extensions.",
+            "capabilities": ["code_generation", "file_operations", "web_search", "mcp_tools", "skills", "multi_modal"],
+        },
+        {
+            "id": "agy",
+            "name": "Antigravity (agy)",
+            "type": "cli",
+            "class": "cloud",
+            "color": "#1a73e8",
+            "icon": "sparkles",
+            "description": "Google Antigravity CLI — Gemini-powered successor to gemini-cli (deprecation: 2026-06-18). Native Go binary, keyring auth, plain markdown output.",
             "capabilities": ["code_generation", "file_operations", "web_search", "mcp_tools", "skills", "multi_modal"],
         },
         {

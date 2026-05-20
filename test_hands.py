@@ -57,8 +57,8 @@ def check_env():
     keys = [
         "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY",
         "CF_WORKER_URL", "NODE_ID", "NODE_TOKEN", "NODE_KEY", "NODE_NAME",
-        "ENABLE_GEMINI_CLI", "ENABLE_CLAUDE_REMOTE_CONTROL", "ENABLE_CODEX_SERVER",
-        "ENABLE_OLLAMA_API", "ENABLE_MFLUX_IMAGE", "NODE_BIN_DIR",
+        "ENABLE_GEMINI_CLI", "ENABLE_AGY_CLI", "ENABLE_CLAUDE_REMOTE_CONTROL",
+        "ENABLE_CODEX_SERVER", "ENABLE_OLLAMA_API", "ENABLE_MFLUX_IMAGE", "NODE_BIN_DIR",
         "PATH",
     ]
     for k in keys:
@@ -91,7 +91,7 @@ def check_binaries():
         log(f"    {'OK' if exists else 'MISSING':7} {d}", "debug")
 
     log("")
-    for binary in ["node", "npx", "gemini", "claude", "codex", "git", "ollama"]:
+    for binary in ["node", "npx", "gemini", "agy", "claude", "codex", "git", "ollama"]:
         resolved = resolve_cli_path(binary)
         which_result = shutil.which(binary)
         exists = os.path.isfile(resolved) if resolved != binary else False

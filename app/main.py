@@ -1386,6 +1386,7 @@ def api_list_session_files(session_id: str):
 # ─── Environment gate check (shared by REST + WebSocket) ─────
 _ENV_GATES = {
     "gemini": "ENABLE_GEMINI_CLI",
+    "agy":    "ENABLE_AGY_CLI",
     "claude": "ENABLE_CLAUDE_REMOTE_CONTROL",
     "codex": "ENABLE_CODEX_SERVER",
     "ollama": "ENABLE_OLLAMA_API",

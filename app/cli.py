@@ -46,9 +46,9 @@ def cmd_register(args):
             hands = [{"name": h["name"]} for h in resp.json().get("hands", [])]
     except Exception:
         # Bridge not running — register with default hands
-        for cmd, name in [("gemini", "gemini"), ("claude", "claude"), ("codex", "codex")]:
-            import shutil
-            if shutil.which(cmd) or shutil.which("npx"):
+        import shutil
+        for cmd, name in [("gemini", "gemini"), ("agy", "agy"), ("claude", "claude"), ("codex", "codex")]:
+            if shutil.which(cmd) or (name != "agy" and shutil.which("npx")):
                 hands.append({"name": name})
 
     if not hands:
@@ -116,6 +116,10 @@ def cmd_register(args):
         with open(env_path, 'w') as f:
             f.write(f"""# ─── Agent Enable Flags ───
 ENABLE_GEMINI_CLI=true
+# Antigravity (agy) — Gemini-powered successor to gemini-cli (legacy
+# gemini-cli is scheduled for deprecation on 2026-06-18). Set to true
+# once `agy` is installed and signed in via `agy install`.
+ENABLE_AGY_CLI=false
 ENABLE_CLAUDE_REMOTE_CONTROL=true
 ENABLE_CODEX_SERVER=true
 ENABLE_OLLAMA_API=false

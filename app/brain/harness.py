@@ -63,6 +63,16 @@ class HarnessManager:
             timeout_seconds=120,
             env_gate="ENABLE_GEMINI_CLI",
         )
+        # Antigravity (agy) — Gemini-powered successor to gemini-cli.
+        # Same 1M context window as Gemini Pro.
+        self._configs["agy"] = HarnessConfig(
+            agent="agy",
+            max_context_tokens=1_000_000,
+            auto_compact=False,
+            compact_threshold=0.9,
+            timeout_seconds=300,             # agy spawns LSP + auth; allow more
+            env_gate="ENABLE_AGY_CLI",
+        )
         self._configs["claude"] = HarnessConfig(
             agent="claude",
             max_context_tokens=200_000,     # Claude: 200k context

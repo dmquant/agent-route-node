@@ -29,14 +29,16 @@ from app.hands.rate_limit import RateLimitInfo
 # A new hand is added by registering it AND adding it to this map. Hands
 # absent from the map have NO automatic fallback — explicit user choice.
 DEFAULT_FALLBACK_CHAINS: Dict[str, List[str]] = {
-    "gemini": ["claude", "codex"],
-    "claude": ["gemini", "codex"],
-    "codex":  ["claude", "gemini"],
+    "gemini": ["agy", "claude", "codex"],
+    "agy":    ["gemini", "claude", "codex"],
+    "claude": ["gemini", "agy", "codex"],
+    "codex":  ["claude", "gemini", "agy"],
 }
 
 # Env gates control which hands actually get registered & report healthy.
 _ENV_GATES = {
     "gemini": "ENABLE_GEMINI_CLI",
+    "agy":    "ENABLE_AGY_CLI",
     "claude": "ENABLE_CLAUDE_REMOTE_CONTROL",
     "codex":  "ENABLE_CODEX_SERVER",
     "ollama": "ENABLE_OLLAMA_API",
@@ -293,6 +295,7 @@ hand_registry = HandRegistry()
 def auto_register_all():
     """Auto-discover and register all built-in hands."""
     from app.hands.gemini_hand import GeminiHand
+    from app.hands.agy_hand import AgyHand
     from app.hands.claude_hand import ClaudeHand
     from app.hands.codex_hand import CodexHand
     from app.hands.ollama_hand import OllamaHand
@@ -300,7 +303,7 @@ def auto_register_all():
     from app.hands.vane_hand import VaneHand
     from app.hands.opencode_hand import OpencodeHand
 
-    for HandClass in [GeminiHand, ClaudeHand, CodexHand, OllamaHand, MfluxHand, VaneHand, OpencodeHand]:
+    for HandClass in [GeminiHand, AgyHand, ClaudeHand, CodexHand, OllamaHand, MfluxHand, VaneHand, OpencodeHand]:
         hand_registry.register(HandClass())
 
     # Eagerly load any persisted cooldowns so /api/hands/status is accurate

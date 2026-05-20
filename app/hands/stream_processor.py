@@ -257,6 +257,39 @@ class CodexStreamProcessor(BaseStreamProcessor):
         return super().process_line(line)
 
 
+class AgyStreamProcessor(BaseStreamProcessor):
+    """Antigravity (agy) CLI processor — plain markdown output.
+
+    agy emits plain markdown on stdout (no --output-format json), so we
+    inherit BaseStreamProcessor's code-block / error / progress detection
+    and add a few Antigravity-specific tool-call hints.
+    """
+
+    agent_name = "agy"
+
+    def process_line(self, line: str) -> list[StreamChunk]:
+        stripped = line.strip()
+
+        # ── agy tool-use markers ──
+        # Antigravity narrates tool calls with patterns like
+        # "Running command:", "Reading file ...", "Searching for ..."
+        if re.match(r'(?:Reading|Writing|Creating|Editing|Deleting|Modifying)\s+(?:file|directory|`)', line, re.IGNORECASE):
+            return [StreamChunk("tool_use", line, {"tool": "file_op"})]
+
+        if re.match(r'(?:Running|Executing)\s+(?:command|shell|terminal|`)', line, re.IGNORECASE):
+            return [StreamChunk("tool_use", line, {"tool": "shell"})]
+
+        if re.match(r'(?:Searching|Grepping|Finding|Looking\s+for)', line, re.IGNORECASE):
+            return [StreamChunk("tool_use", line, {"tool": "search"})]
+
+        # ── File write detection ──
+        if re.match(r'^(?:Created|Modified|Updated|Wrote)\s+.*\.\w+', line):
+            filename = re.search(r'[\w/\.\-]+\.\w+', line)
+            return [StreamChunk("code_write", line, {"file": filename.group() if filename else ""})]
+
+        return super().process_line(line)
+
+
 class OllamaStreamProcessor(BaseStreamProcessor):
     """Ollama HTTP processor — minimal wrapping, mostly text."""
     agent_name = "ollama"
@@ -276,10 +309,11 @@ class MfluxStreamProcessor(BaseStreamProcessor):
 # ─── Processor Registry ────────────────────────────────
 PROCESSORS = {
     "gemini": GeminiStreamProcessor,
+    "agy":    AgyStreamProcessor,
     "claude": ClaudeStreamProcessor,
-    "codex": CodexStreamProcessor,
+    "codex":  CodexStreamProcessor,
     "ollama": OllamaStreamProcessor,
-    "mflux": MfluxStreamProcessor,
+    "mflux":  MfluxStreamProcessor,
 }
 
 def get_processor(agent: str) -> BaseStreamProcessor:
