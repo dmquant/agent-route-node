@@ -40,8 +40,22 @@ class AgyHand(Hand):
         model: Optional[str] = None,
         **kwargs,
     ) -> HandResult:
+        os.makedirs(workspace_dir, exist_ok=True)
+        await self._ensure_git(workspace_dir)
+
         cmd = resolve_cli_path("agy")
-        args = ["--print", "--dangerously-skip-permissions"]
+        # CRITICAL: `--print` (a.k.a. `--prompt`) is a value-taking flag — it
+        # consumes the NEXT token as the prompt. So every other flag MUST come
+        # before it, and the actual prompt MUST be its immediate value. Passing
+        # `--print` before other flags makes agy treat the next flag string as
+        # the prompt and silently drop the real input.
+        args = ["--dangerously-skip-permissions"]
+
+        # agy print mode ignores cwd for workspace context — it needs an
+        # explicit --add-dir to know where to read/write files. Without it,
+        # file ops land in agy's scratch dir, not the session workspace.
+        args.extend(["--add-dir", workspace_dir])
+
         # agy does NOT accept --model in --print mode (the flag is unknown
         # and the binary exits non-zero). Model is set via agy's UI config.
         # If a caller passes `model=`, we record it for traceability but
@@ -58,11 +72,8 @@ class AgyHand(Hand):
         os.close(log_fd)
         args.extend(["--log-file", log_path])
 
-        # Prompt goes last as the --print argument value.
-        args.append(input)
-
-        os.makedirs(workspace_dir, exist_ok=True)
-        await self._ensure_git(workspace_dir)
+        # MUST be last: `--print <prompt>` — the prompt is this flag's value.
+        args.extend(["--print", input])
 
         if on_log:
             short_dir = os.path.basename(workspace_dir)[:12]
