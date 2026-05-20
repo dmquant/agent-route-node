@@ -8,10 +8,22 @@ on stdout (no --output-format json).
 This hand runs `agy --print --dangerously-skip-permissions` per task and
 streams stderr in real-time for progress. Model selection happens inside
 agy's stored config — there is no per-invocation --model flag.
+
+Two agy quirks need special handling so output rides the CF workspace sync:
+
+  1. Print mode ignores cwd for the file workspace — we pass `--add-dir
+     <workspace_dir>` so the main deliverable lands in the synced dir.
+  2. Agentic runs write extra artifacts (task.md, implementation_plan.md,
+     walkthrough.md) to ~/.gemini/antigravity-cli/brain/<conversation-id>/,
+     OUTSIDE the workspace. We parse the conversation-id from the --log-file
+     and copy those into workspace_dir/agy_artifacts/ so they sync, and we
+     inline the walkthrough into the result text. As a safety net we also
+     scavenge any run-fresh files agy may have dropped in its scratch dir.
 """
 
 import asyncio
 import os
+import re
 import json
 import tempfile
 import time
@@ -19,6 +31,26 @@ from typing import Optional, Callable, Any
 
 from app.hands.base import Hand, HandResult, filter_noise, resolve_cli_path, get_cli_env
 from app.hands.stream_processor import AgyStreamProcessor
+
+
+def _agy_data_root() -> str:
+    """Antigravity CLI data dir — holds scratch/ and brain/<conv-id>/."""
+    return os.path.expanduser("~/.gemini/antigravity-cli")
+
+
+def _parse_conversation_id(log_path: str) -> Optional[str]:
+    """Extract agy's conversation UUID from its --log-file.
+
+    The brain artifact dir is keyed by this id:
+      `server.go:747] Created conversation <uuid>`
+    """
+    try:
+        with open(log_path, "r", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return None
+    m = re.search(r"Created conversation ([0-9a-fA-F-]{36})", text)
+    return m.group(1) if m else None
 
 
 class AgyHand(Hand):
@@ -82,6 +114,10 @@ class AgyHand(Hand):
                 note += f" — requested model `{model}` (note: agy ignores per-call model)"
             await on_log(json.dumps({"chunkType": "progress", "content": note}))
 
+        # Timestamp just before spawn — the lower bound for scavenging any
+        # run-fresh files agy drops in its scratch dir (see _capture_artifacts).
+        started_at = time.time()
+
         try:
             process = await asyncio.create_subprocess_exec(
                 cmd, *args,
@@ -133,26 +169,55 @@ class AgyHand(Hand):
                     break
                 raw_stdout_chunks.append(chunk.decode('utf-8', errors='replace'))
 
+        captured_artifacts: list[str] = []
+        walkthrough_text: Optional[str] = None
         try:
             await asyncio.gather(stream_stderr(), read_stdout())
             exit_code = await process.wait()
         finally:
+            # Capture artifacts BEFORE deleting the log (we need the conv-id).
+            if os.getenv("AGY_CAPTURE_ARTIFACTS", "true") != "false":
+                try:
+                    conv_id = _parse_conversation_id(log_path)
+                    captured_artifacts, walkthrough_text = _capture_artifacts(
+                        workspace_dir, conv_id, started_at
+                    )
+                except Exception:
+                    pass
             _safe_unlink(log_path)
 
         raw_stdout = ''.join(raw_stdout_chunks)
         output_text = filter_noise(raw_stdout).strip()
-
-        # Emit the parsed final output as a single text chunk so the
-        # frontend's OutputParser can render markdown / code blocks.
-        if output_text and on_log:
-            await on_log(json.dumps({"chunkType": "text", "content": output_text}))
 
         if not output_text and exit_code != 0:
             stderr_text = ''.join(raw_stderr_chunks).strip()
             if stderr_text:
                 output_text = stderr_text
 
-        return HandResult(output=output_text or f"Exit code {exit_code}", exit_code=exit_code)
+        # Inline the agy walkthrough (a concise findings/verification summary)
+        # so downstream clients see it without fetching the synced file.
+        if walkthrough_text:
+            output_text = (
+                f"{output_text}\n\n---\n\n## Agy Walkthrough\n\n{walkthrough_text.strip()}"
+            ).strip()
+
+        # Emit the final output as a single text chunk so the frontend's
+        # OutputParser can render markdown / code blocks.
+        if output_text and on_log:
+            await on_log(json.dumps({"chunkType": "text", "content": output_text}))
+
+        if captured_artifacts and on_log:
+            await on_log(json.dumps({
+                "chunkType": "system",
+                "content": f"📎 Captured {len(captured_artifacts)} agy artifact(s): "
+                           + ", ".join(captured_artifacts),
+            }))
+
+        return HandResult(
+            output=output_text or f"Exit code {exit_code}",
+            exit_code=exit_code,
+            artifacts=captured_artifacts,
+        )
 
     async def health_check(self) -> bool:
         path = resolve_cli_path("agy")
@@ -177,3 +242,81 @@ def _safe_unlink(path: str) -> None:
         os.unlink(path)
     except OSError:
         pass
+
+
+def _capture_artifacts(
+    workspace_dir: str, conv_id: Optional[str], started_at: float
+) -> tuple[list[str], Optional[str]]:
+    """Pull agy's out-of-workspace outputs into workspace_dir so they sync.
+
+    Returns (captured_relpaths, walkthrough_text).
+
+    Two sources, both written by agy OUTSIDE the --add-dir workspace:
+      • brain artifacts  → ~/.gemini/antigravity-cli/brain/<conv-id>/*.md
+                           copied into workspace_dir/agy_artifacts/
+      • scratch fallback → ~/.gemini/antigravity-cli/scratch/** files whose
+                           mtime is newer than this run's start (a safety net
+                           for the case where agy bypasses --add-dir). Copied
+                           into workspace_dir/agy_scratch/ preserving subpaths.
+
+    NOTE: the scratch scan is mtime-scoped to this run; on a node executing
+    multiple agy tasks concurrently it could in theory grab a sibling run's
+    fresh file. That's an accepted trade-off — the primary path (--add-dir)
+    keeps scratch empty, so this only fires on the rare fallback.
+    """
+    captured: list[str] = []
+    walkthrough_text: Optional[str] = None
+    data_root = _agy_data_root()
+
+    # 1. Brain artifacts (task.md, implementation_plan.md, walkthrough.md, …)
+    if conv_id:
+        brain_dir = os.path.join(data_root, "brain", conv_id)
+        if os.path.isdir(brain_dir):
+            dest = os.path.join(workspace_dir, "agy_artifacts")
+            for fn in sorted(os.listdir(brain_dir)):
+                if not fn.endswith(".md") or fn.endswith(".metadata.json"):
+                    continue
+                src = os.path.join(brain_dir, fn)
+                if not os.path.isfile(src):
+                    continue
+                try:
+                    with open(src, "r", errors="replace") as f:
+                        content = f.read()
+                    os.makedirs(dest, exist_ok=True)
+                    with open(os.path.join(dest, fn), "w") as f:
+                        f.write(content)
+                    captured.append(f"agy_artifacts/{fn}")
+                    if fn == "walkthrough.md":
+                        walkthrough_text = content
+                except OSError:
+                    pass
+
+    # 2. Scratch safety net — copy run-fresh files into the workspace.
+    scratch_dir = os.path.join(data_root, "scratch")
+    if os.path.isdir(scratch_dir):
+        for root, dirs, files in os.walk(scratch_dir):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for fn in files:
+                if fn.startswith("."):
+                    continue
+                src = os.path.join(root, fn)
+                try:
+                    if os.path.getmtime(src) < started_at:
+                        continue
+                except OSError:
+                    continue
+                rel = os.path.relpath(src, scratch_dir)
+                # Skip if an identically-named file already exists at the
+                # workspace root (agy wrote it there directly via --add-dir).
+                if os.path.exists(os.path.join(workspace_dir, rel)):
+                    continue
+                dst = os.path.join(workspace_dir, "agy_scratch", rel)
+                try:
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
+                        fdst.write(fsrc.read())
+                    captured.append(os.path.join("agy_scratch", rel))
+                except OSError:
+                    pass
+
+    return captured, walkthrough_text

@@ -15,7 +15,7 @@ from app.config import get_workspaces_dir, get_data_dir
 WORKSPACES_DIR = get_workspaces_dir()
 STATE_FILE = os.path.join(get_data_dir(), '.workspace_sync_state.json')
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
-IGNORE_PATTERNS = {'.git', '__pycache__', 'node_modules', '.DS_Store', '.venv', '.env'}
+IGNORE_PATTERNS = {'.git', '__pycache__', 'node_modules', '.DS_Store', '.venv', '.env', '.antigravitycli'}
 
 _sync_state: dict[str, float] = {}  # file_key -> last synced mtime
 
