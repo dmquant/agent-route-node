@@ -330,12 +330,27 @@ def _capture_artifacts(
                 try:
                     with open(src, "r", errors="replace") as f:
                         content = f.read()
-                    os.makedirs(dest, exist_ok=True)
-                    with open(os.path.join(dest, fn), "w") as f:
-                        f.write(content)
-                    captured.append(f"agy_artifacts/{fn}")
                     if fn == "walkthrough.md":
                         walkthrough_text = content
+                    os.makedirs(dest, exist_ok=True)
+                    dest_path = os.path.join(dest, fn)
+                    # Only (re)write when content changed, so an unchanged
+                    # artifact keeps its mtime and workspace_sync skips
+                    # re-uploading it. agy regenerates these every run; without
+                    # this guard each run re-PUTs identical files → R2 Class-A
+                    # churn (mirrors the institute's archiveSessionWorkspace
+                    # skip-if-unchanged fix).
+                    existing: Optional[str] = None
+                    if os.path.exists(dest_path):
+                        try:
+                            with open(dest_path, "r", errors="replace") as f:
+                                existing = f.read()
+                        except OSError:
+                            existing = None
+                    if existing != content:
+                        with open(dest_path, "w") as f:
+                            f.write(content)
+                    captured.append(f"agy_artifacts/{fn}")
                 except OSError:
                     pass
 
