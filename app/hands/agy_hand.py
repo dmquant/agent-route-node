@@ -194,10 +194,6 @@ class AgyHand(Hand):
 
         cmd = resolve_cli_path("agy")
         # NOTE on flags:
-        #  - We do NOT pass --dangerously-skip-permissions. It doesn't actually
-        #    bypass agy's core tool review in print mode (agy says so itself),
-        #    and it nudges agy toward interactive confirmation code paths. The
-        #    behaviour matrix showed agy writes files reliably WITHOUT it.
         #  - `--print` (a.k.a. `--prompt`) is a value-taking flag — it consumes
         #    the NEXT token as the prompt. So every other flag MUST come before
         #    it, and the prompt MUST be its immediate value, or agy treats the
@@ -208,6 +204,24 @@ class AgyHand(Hand):
         # explicit --add-dir to know where to read/write files. Without it,
         # file ops land in agy's scratch dir, not the session workspace.
         args.extend(["--add-dir", workspace_dir])
+
+        # Auto-approve tool permissions in print mode. REVERSAL of a prior
+        # decision: an earlier comment claimed agy "writes files reliably
+        # WITHOUT it", which was true before agy's 2026-05-20 release. Since
+        # then, print mode SOFT-DENIES the Edit/file tool
+        # (tool_confirmation_manager: `Print mode: soft-denying tool
+        # confirmation "Edit"` → `approved=false`), so agy declines every file
+        # write, produces empty stdout, and exits 0 — the "0% file capture"
+        # defect (the twin of the exit-0 silent-blank). Verified on agy 1.1.3:
+        # WITHOUT the flag a file-write probe writes nothing + empty stdout;
+        # WITH it (`Print mode: --dangerously-skip-permissions set,
+        # auto-approving all tool permissions`) the file lands (411B, marker
+        # present) and stdout returns the real answer. The flag auto-approves
+        # ALL agy tool calls incl. shell — acceptable for this autonomous
+        # execution node (same posture as the claude/codex hands), gated by
+        # agy's own config allow-list. Disable via AGY_SKIP_PERMISSIONS=false.
+        if os.getenv("AGY_SKIP_PERMISSIONS", "true") != "false":
+            args.append("--dangerously-skip-permissions")
 
         # agy does NOT accept --model in --print mode (the flag is unknown
         # and the binary exits non-zero). Model is set via agy's UI config.
