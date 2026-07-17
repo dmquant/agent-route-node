@@ -334,11 +334,50 @@ def _parse_vane(output: str) -> Optional[RateLimitInfo]:
     )
 
 
+def _parse_agy(output: str) -> Optional[RateLimitInfo]:
+    """Antigravity (agy) — gemini-powered CLI. Two shapes:
+
+      1. Google's per-request geo-block, which agy_hand surfaces as plain
+         error text ("FAILED_PRECONDITION ... User location is not
+         supported ..."). This is NOT a quota exhaustion but a transient,
+         egress-IP-dependent rejection; we route it through the SAME
+         cooldown + requeue machinery (the incident's interface contract).
+         retry_after_s=300 matches the worker's per-(node,hand) cooldown
+         window. task_puller then structures the canonical
+         `[RATE_LIMITED hand=agy retry_after_s=300 reason=geo_block]`.
+      2. Unambiguous backend quota error-class tokens (agy shares gemini's
+         backend). Deliberately NOT the loose "exhausted"+"quota" prose
+         combo — agy emits long research reports that legitimately use
+         those words, which would false-positive a cooldown.
+    """
+    low = output.lower()
+    if any(m in low for m in (
+        "user location is not supported",
+        "location is not supported for the api",
+        "failed_precondition",
+    )):
+        return RateLimitInfo(
+            hand="agy",
+            retry_after_s=300,
+            reset_at_unix=int(time.time()) + 300,
+            reason="geo_block",
+        )
+    if "terminalquotaerror" in low or "resource_exhausted" in low:
+        return RateLimitInfo(
+            hand="agy",
+            retry_after_s=DEFAULT_FALLBACK_S,
+            reset_at_unix=int(time.time()) + DEFAULT_FALLBACK_S,
+            reason="quota_exhausted",
+        )
+    return None
+
+
 _PARSERS = {
     "gemini": _parse_gemini,
     "claude": _parse_claude,
     "codex":  _parse_codex,
     "vane":   _parse_vane,
+    "agy":    _parse_agy,
 }
 
 
