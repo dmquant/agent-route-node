@@ -11,7 +11,7 @@ import json
 import shutil
 from typing import Optional, Callable, Any
 
-from app.hands.base import Hand, HandResult, filter_noise, _NOISE_PATTERNS, resolve_cli_path, get_cli_env
+from app.hands.base import Hand, HandResult, filter_noise, _NOISE_PATTERNS, resolve_cli_path, get_cli_env, utf8_stream_decoder
 from app.hands.stream_processor import CodexStreamProcessor
 
 
@@ -77,16 +77,18 @@ class CodexHand(Hand):
         async def stream_output(stream, is_stderr=False):
             nonlocal skip_banner
             buf = ""
+            dec = utf8_stream_decoder()
             while True:
                 chunk = await stream.read(256)
                 if not chunk:
+                    buf += dec.decode(b"", final=True)
                     if buf.strip():
                         full_output.append(buf.strip())
                         if on_log:
                             for sc in processor.process_line(buf.strip()):
                                 await on_log(json.dumps(sc.to_event()))
                     break
-                text = chunk.decode('utf-8', errors='replace')
+                text = dec.decode(chunk)
                 buf += text
                 while '\n' in buf:
                     line, buf = buf.split('\n', 1)

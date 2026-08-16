@@ -49,6 +49,7 @@ from typing import Optional, Callable, Any
 
 from app.hands.base import (
     Hand, HandResult, _NOISE_PATTERNS, resolve_cli_path, get_cli_env,
+    utf8_stream_decoder,
 )
 
 
@@ -270,10 +271,12 @@ class OpencodeHand(Hand):
 
         async def stream_stdout() -> None:
             buf = ""
+            dec = utf8_stream_decoder()
             assert process.stdout is not None
             while True:
                 chunk = await process.stdout.read(2048)
                 if not chunk:
+                    buf += dec.decode(b"", final=True)
                     if buf.strip():
                         stdout_lines.append(buf)
                         try:
@@ -281,7 +284,7 @@ class OpencodeHand(Hand):
                         except Exception:
                             pass
                     break
-                buf += chunk.decode("utf-8", errors="replace")
+                buf += dec.decode(chunk)
                 while "\n" in buf:
                     line, buf = buf.split("\n", 1)
                     line = line.rstrip()
@@ -311,12 +314,13 @@ class OpencodeHand(Hand):
 
         async def stream_stderr() -> None:
             buf = ""
+            dec = utf8_stream_decoder()
             assert process.stderr is not None
             while True:
                 chunk = await process.stderr.read(2048)
                 if not chunk:
                     break
-                buf += chunk.decode("utf-8", errors="replace")
+                buf += dec.decode(chunk)
                 while "\n" in buf:
                     line, buf = buf.split("\n", 1)
                     line = line.rstrip()

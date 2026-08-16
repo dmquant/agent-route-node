@@ -11,9 +11,29 @@ Inspired by Anthropic's Managed Agents: execute(name, input) → string
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, AsyncGenerator, Callable, Any, List
+import codecs
 import os
 import shutil
 import re
+
+
+# ─── Stream-safe UTF-8 decoding ─────────────────────
+# chunk.decode('utf-8', errors='replace') destroys any multi-byte character
+# split across a chunk-read boundary — permanently, at read time. CJK is 3
+# bytes per char and splits constantly; ASCII never does. That asymmetry
+# produced the measured corruption gradient across hands (codex 256-byte
+# reads ≈100%, opencode 2048-byte reads ≈29% U+FFFD on CJK-bearing tasks,
+# 2026-08-14) and reached canonical KB facts.
+#
+# An incremental decoder retains the incomplete trailing sequence between
+# feeds, so a boundary split never substitutes; only genuinely invalid bytes
+# become U+FFFD. At EOF call .decode(b"", final=True) — a dangling partial
+# sequence there IS real truncation and is correctly replaced.
+
+
+def utf8_stream_decoder():
+    """Per-stream incremental UTF-8 decoder for subprocess chunk reads."""
+    return codecs.getincrementaldecoder("utf-8")(errors="replace")
 
 
 # ─── CLI Binary Resolution ──────────────────────────

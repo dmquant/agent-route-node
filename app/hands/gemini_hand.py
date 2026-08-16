@@ -11,7 +11,7 @@ import re
 import shutil
 from typing import Optional, Callable, Any
 
-from app.hands.base import Hand, HandResult, filter_noise, resolve_cli_path, get_cli_env
+from app.hands.base import Hand, HandResult, filter_noise, resolve_cli_path, get_cli_env, utf8_stream_decoder
 from app.hands.stream_processor import GeminiStreamProcessor
 
 
@@ -155,11 +155,15 @@ class GeminiHand(Hand):
             from app.hands.base import _NOISE_PATTERNS
             from app.hands.activity_classifier import classify_line
             buf = ""
+            dec = utf8_stream_decoder()
             while True:
                 chunk = await process.stderr.read(256)
                 if not chunk:
+                    tail = dec.decode(b"", final=True)
+                    if tail:
+                        raw_stderr_chunks.append(tail)
                     break
-                text = chunk.decode('utf-8', errors='replace')
+                text = dec.decode(chunk)
                 raw_stderr_chunks.append(text)
                 buf += text
                 while '\n' in buf:
@@ -178,11 +182,15 @@ class GeminiHand(Hand):
                             await on_log(json.dumps({"chunkType": "system", "content": line}))
 
         async def read_stdout():
+            dec = utf8_stream_decoder()
             while True:
                 chunk = await process.stdout.read(4096)
                 if not chunk:
+                    tail = dec.decode(b"", final=True)
+                    if tail:
+                        raw_stdout_chunks.append(tail)
                     break
-                raw_stdout_chunks.append(chunk.decode('utf-8', errors='replace'))
+                raw_stdout_chunks.append(dec.decode(chunk))
 
         await asyncio.gather(stream_stderr(), read_stdout())
         exit_code = await process.wait()

@@ -11,7 +11,7 @@ import json
 import shutil
 from typing import Optional, Callable, Any
 
-from app.hands.base import Hand, HandResult, filter_noise, _NOISE_PATTERNS, resolve_cli_path, get_cli_env
+from app.hands.base import Hand, HandResult, filter_noise, _NOISE_PATTERNS, resolve_cli_path, get_cli_env, utf8_stream_decoder
 from app.hands.stream_processor import ClaudeStreamProcessor
 from app.hands.activity_classifier import classify_line
 
@@ -75,9 +75,11 @@ class ClaudeHand(Hand):
 
         async def stream_stdout():
             buf = ""
+            dec = utf8_stream_decoder()
             while True:
                 chunk = await process.stdout.read(256)
                 if not chunk:
+                    buf += dec.decode(b"", final=True)
                     # Flush remaining buffer
                     if buf.strip():
                         full_output.append(buf)
@@ -85,7 +87,7 @@ class ClaudeHand(Hand):
                             for sc in processor.process_line(buf):
                                 await on_log(json.dumps(sc.to_event()))
                     break
-                text = chunk.decode('utf-8', errors='replace')
+                text = dec.decode(chunk)
                 buf += text
                 while '\n' in buf:
                     line, buf = buf.split('\n', 1)
@@ -105,11 +107,12 @@ class ClaudeHand(Hand):
         async def stream_stderr():
             """Stream stderr for error detection."""
             buf = ""
+            dec = utf8_stream_decoder()
             while True:
                 chunk = await process.stderr.read(256)
                 if not chunk:
                     break
-                text = chunk.decode('utf-8', errors='replace')
+                text = dec.decode(chunk)
                 buf += text
                 while '\n' in buf:
                     line, buf = buf.split('\n', 1)
