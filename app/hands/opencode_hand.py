@@ -266,6 +266,13 @@ class OpencodeHand(Hand):
 
         os.makedirs(workspace_dir, exist_ok=True)
 
+        # opencode resolves its PROJECT from a git worktree, not from cwd. With no .git here the
+        # workspace is not a project, so opencode attaches to ~/.agent-route/node -- a shared
+        # directory holding thousands of prior outputs -- and relative-path writes land there
+        # instead of in the session workspace. lsof confirms cwd is correct; opencode.db's
+        # session.directory shows the repo. agy_hand.py has always done this.
+        await self._ensure_git(workspace_dir)
+
         if on_log:
             short_dir = os.path.basename(workspace_dir)[:12]
             await on_log(json.dumps({
@@ -397,3 +404,16 @@ class OpencodeHand(Hand):
             "description": self.description,
             "model": self.default_model or "(opencode default)",
         }
+
+    async def _ensure_git(self, workspace_dir: str):
+        git_dir = os.path.join(workspace_dir, ".git")
+        if not os.path.exists(git_dir):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "git", "init", cwd=workspace_dir,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.wait()
+            except Exception:
+                pass
