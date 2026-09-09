@@ -62,6 +62,14 @@ def resolve_cli_path(binary: str) -> str:
         "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin",
         os.path.expanduser("~/.local/bin"),
         os.path.expanduser("~/.npm-global/bin"),
+        # Modern single-binary CLIs install under ~/.<tool>/bin and put it on PATH from the shell
+        # profile only, so a non-interactive context -- an ssh command, a daemon started by a
+        # script, launchd -- cannot see them. opencode lives at ~/.opencode/bin/opencode on every
+        # host here and was not searched: on 2026-09-09 a uvicorn restart from a shell without the
+        # profile made every hand unresolvable for twenty minutes while /api/agents still answered
+        # 200, because the health endpoint reports the server rather than the tools.
+        os.path.expanduser(f"~/.{binary}/bin"),
+        os.path.expanduser("~/.bun/bin"),
     ]
 
     # Custom NODE_BIN from env
