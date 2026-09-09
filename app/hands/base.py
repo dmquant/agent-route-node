@@ -268,6 +268,12 @@ class HandResult:
     exit_code: int
     image_b64: Optional[str] = None
     artifacts: List[str] = field(default_factory=list)
+    # The hand already counts tokens and cost off opencode's step_finish events, then renders them
+    # into a markdown line -- so every consumer had to read them back out of prose. Neither the
+    # institute's queue nor agent-route's task record holds a token or cost column, and on
+    # 2026-09-09 both sourced the figure from an operator's paste of this hand's own output string.
+    # Carried structurally now. Optional, so hands that do not measure are unaffected.
+    metrics: Optional[dict] = None
 
     @property
     def success(self) -> bool:
@@ -279,6 +285,8 @@ class HandResult:
             d["image_b64"] = self.image_b64
         if self.artifacts:
             d["artifacts"] = self.artifacts
+        if self.metrics:
+            d["metrics"] = self.metrics
         return d
 
 

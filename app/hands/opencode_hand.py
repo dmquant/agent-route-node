@@ -207,6 +207,29 @@ class _OpencodeEvents:
         return sections[0] if sections else ""
 
 
+def _metrics(events) -> dict:
+    """The numbers this hand already holds, as data instead of prose.
+
+    Reported on the timeout path too: a task killed at OPENCODE_TIMEOUT_S has usually spent real
+    money and often produced real output. On 2026-09-09, 17 of 29 killed tagger dispatches had
+    written parseable JSON before the kill, while every downstream table recorded them as having
+    delivered nothing.
+    """
+    dur = None
+    if events.start_ts and events.end_ts and events.end_ts > events.start_ts:
+        dur = round((events.end_ts - events.start_ts) / 1000, 1)
+    return {
+        "tokens_input": events.tokens_input,
+        "tokens_output": events.tokens_output,
+        "tokens_total": events.tokens_total,
+        "cost_usd": round(events.cost, 6),
+        "duration_s": dur,
+        "opencode_session_id": events.session_id,
+        "bash_commands": len(events.bash_commands),
+        "files_written": len(events.files_written),
+    }
+
+
 class OpencodeHand(Hand):
     name = "opencode"
     hand_type = "cli"
@@ -347,6 +370,7 @@ class OpencodeHand(Hand):
             return HandResult(
                 output=f"opencode timed out after {self.timeout_s}s",
                 exit_code=124,
+                metrics=_metrics(events),
             )
 
         # Build the final structured output. If events.render() comes back
@@ -359,7 +383,8 @@ class OpencodeHand(Hand):
         if exit_code != 0 and not output_text:
             output_text = f"opencode exited with code {exit_code}"
 
-        return HandResult(output=output_text or f"Exit code {exit_code}", exit_code=exit_code)
+        return HandResult(output=output_text or f"Exit code {exit_code}", exit_code=exit_code,
+                          metrics=_metrics(events))
 
     async def health_check(self) -> bool:
         path = resolve_cli_path("opencode")
