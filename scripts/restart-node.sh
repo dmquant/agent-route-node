@@ -1,42 +1,33 @@
 #!/bin/zsh
-# Restart the edge node daemon.
+# Restart the edge node daemon, and verify the HAND rather than the endpoint.
 #
-# There is no supervisor: nothing restarts this process if it dies or if the machine reboots, and
-# the environment it inherits is whatever the launching shell had. On 2026-09-09 a restart from a
-# shell without the profile left every hand unresolvable for twenty minutes -- and the failure was
-# invisible, because /api/agents answered 200 the whole time. resolve_cli_path() no longer depends
-# on PATH, so that specific fault is fixed in code; this script exists so a restart is reproducible
-# rather than retyped, and so the verification below is not optional.
+# /api/agents returns 200 whether or not any CLI is resolvable -- on 2026-09-09 it answered 200 for
+# twenty minutes while every dispatch failed in under a second. A restart is not verified until a
+# hand reports healthy.
 set -e
-cd "$HOME/.agent-route/node"
+LABEL=com.dmquant.agent-route-node
+NODE="$HOME/.agent-route/node"
+cd "$NODE"
 
-OLD=$(pgrep -f "uvicorn app.main:app --host 0.0.0.0 --port 8017" | head -1 || true)
-if [ -n "$OLD" ]; then
-  echo "stopping $OLD"
-  kill -TERM "$OLD" 2>/dev/null || true
-  for i in {1..10}; do
-    pgrep -f "uvicorn app.main:app --host 0.0.0.0 --port 8017" >/dev/null || break
-    sleep 1
-  done
+if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+  # launchd owns the process; kicking it by hand would race the supervisor.
+  echo "supervised by launchd — kickstarting"
+  launchctl kickstart -k "gui/$(id -u)/$LABEL"
+else
+  echo "no launchd supervisor (run scripts/install-supervisor.sh) — starting manually"
+  OLD=$(pgrep -f "uvicorn app.main:app --host 0.0.0.0 --port 8017" | head -1 || true)
+  [ -n "$OLD" ] && { kill -TERM "$OLD" 2>/dev/null || true; sleep 3; }
+  nohup "$NODE/.venv/bin/python3" "$NODE/.venv/bin/uvicorn" \
+        app.main:app --host 0.0.0.0 --port 8017 \
+        > "$HOME/Library/Logs/agent-route-node.log" 2>&1 &
 fi
 
-nohup "$HOME/.agent-route/node/.venv/bin/python3" \
-      "$HOME/.agent-route/node/.venv/bin/uvicorn" \
-      app.main:app --host 0.0.0.0 --port 8017 \
-      > /tmp/agent-route-node.log 2>&1 &
-sleep 6
+for i in {1..15}; do
+  PID=$(pgrep -f "uvicorn app.main:app --host 0.0.0.0 --port 8017" | head -1 || true)
+  [ -n "$PID" ] && break
+  sleep 1
+done
+[ -n "$PID" ] || { echo "FAILED: daemon did not come back"; exit 1; }
+echo "running: $PID"
 
-NEW=$(pgrep -f "uvicorn app.main:app --host 0.0.0.0 --port 8017" | head -1 || true)
-[ -n "$NEW" ] || { echo "FAILED: daemon did not start"; exit 1; }
-echo "started $NEW"
-
-# Verify the HAND, not the endpoint. /api/agents returns 200 whether or not any CLI is resolvable.
-.venv/bin/python3 - <<'PY'
-import asyncio, os, sys
-sys.path.insert(0, os.path.expanduser("~/.agent-route/node"))
-from app.hands.opencode_hand import OpencodeHand
-ok = asyncio.run(OpencodeHand().health_check())
-print(f"  opencode hand health_check: {ok}")
-raise SystemExit(0 if ok else 1)
-PY
-echo "restart verified"
+.venv/bin/python3 scripts/supervise.py
