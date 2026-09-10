@@ -14,8 +14,19 @@ sys.path.insert(0, NODE)
 fail = []
 
 def check(name, ok, detail=""):
-    print("  %-22s %s  %s" % (name, "OK  " if ok else "FAIL", detail))
-    if not ok:
+    """Three states, not two.
+
+    OK      the thing is true
+    FAIL    the thing is false -- a supervisor should act
+    UNKNOWN the check could not run -- NOT a verdict about the host, and not actionable
+
+    Pass ok=None for UNKNOWN. On 2026-09-11 the placement lookup timed out and this reported FAIL,
+    waking a supervisor about a node that was healthy and carrying load 3/3. A check that cannot
+    separate "false" from "could not ask" is the same defect this file exists to catch.
+    """
+    state = "OK  " if ok is True else ("FAIL" if ok is False else "????")
+    print("  %-22s %s  %s" % (name, state, detail))
+    if ok is False:
         fail.append(name)
 
 # 1. the daemon exists. nothing restarts it if it does not.
@@ -60,7 +71,20 @@ try:
     else:
         check("not degraded", False, "node row not found for " + (me or "?"))
 except Exception as e:
-    check("not degraded", False, repr(e)[:60])
+    # one retry: a single timeout against a remote worker is noise, not a finding
+    try:
+        row = None
+        req = urllib.request.Request(env["CF_WORKER_URL"] + "/api/nodes",
+                                     headers={"X-API-Key": env["NODE_TOKEN"],
+                                              "User-Agent": "agent-route-node/supervise"})
+        me = env.get("NODE_ID", "").strip('"').strip()
+        row = next((n for n in json.load(urllib.request.urlopen(req, timeout=30))["nodes"]
+                    if n.get("id") == me or n.get("name") == me), None)
+        check("not degraded", (not row.get("degraded")) if row else None,
+              ("degraded=%s consec=%s" % (row.get("degraded"), row.get("consecutive_failures")))
+              if row else "node row not found")
+    except Exception as e2:
+        check("not degraded", None, "could not reach the worker: " + repr(e2)[:44])
 
 # 5. fast-failing tasks: the signature of a broken hand behind a healthy server
 try:
