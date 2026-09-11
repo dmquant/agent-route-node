@@ -24,15 +24,19 @@ Environment:
     AI_INSTITUTE_MCP_SCHEME  value prefix. Default "Bearer " for Authorization,
                              empty for anything else.
     AI_INSTITUTE_MCP_NAME    server name the model sees. Default "ai-institute".
-    AI_INSTITUTE_MCP_HANDS   comma list of hands to configure. Default "opencode,claude".
+    AI_INSTITUTE_MCP_HANDS   comma list of hands to configure. Default "opencode,claude,codex".
 
-Stage 1 covers opencode and claude — the two hands the smoke test exercises, and
-the two with a genuinely per-task configuration surface (a project-local
-opencode.json, and claude's --mcp-config flag). codex, gemini and agy are stage 2:
-codex takes -c dotted overrides and gemini a project .gemini/settings.json, both
-plausible and neither verified yet; agy exposes only a global `agy mcp` registry,
-which is not per-task and needs a different answer. A hand outside the covered set
-gets an empty plan and a note, never a half-configuration.
+Stage 1 covers opencode, claude and codex — the hands with a genuinely per-task
+configuration surface, each verified on a real node: a project-local opencode.json
+shows up in `opencode mcp list`; claude takes --mcp-config; codex takes -c dotted
+overrides, and a deliberately unreachable URL logged a transport error and let the
+task finish, which is the fallback behaviour this needs.
+
+Not covered: gemini keeps MCP servers in settings.json and its per-project form is
+unverified, and it currently fails on gubei12 for an unrelated reason (untrusted
+directory). agy exposes only a global `agy mcp` registry, which is not per-task
+and needs a different answer. Both get an empty plan and a note, never a
+half-configuration.
 """
 import json
 import logging
@@ -49,7 +53,7 @@ _logger = logging.getLogger("mcp_config")
 # NAME of the variable and the spawn carries its value.
 _KEY_VAR = "AI_INSTITUTE_MCP_KEY"
 
-SUPPORTED_HANDS = ("opencode", "claude")
+SUPPORTED_HANDS = ("opencode", "claude", "codex")
 
 
 @dataclass
@@ -79,7 +83,7 @@ def settings() -> Optional[dict]:
     scheme = os.getenv("AI_INSTITUTE_MCP_SCHEME")
     if scheme is None:
         scheme = "Bearer " if header.lower() == "authorization" else ""
-    hands = [h.strip() for h in (os.getenv("AI_INSTITUTE_MCP_HANDS") or "opencode,claude").split(",") if h.strip()]
+    hands = [h.strip() for h in (os.getenv("AI_INSTITUTE_MCP_HANDS") or "opencode,claude,codex").split(",") if h.strip()]
     return {
         "url": url,
         "key": key,
@@ -147,7 +151,28 @@ def _prepare_claude(cfg: dict, workspace_dir: str) -> McpPlan:
                    note=f"--mcp-config {path}")
 
 
-_WRITERS = {"opencode": _prepare_opencode, "claude": _prepare_claude}
+def _prepare_codex(cfg: dict, workspace_dir: str) -> McpPlan:
+    """codex takes `-c` dotted overrides parsed as TOML, so the whole server can
+    be declared on the command line with nothing written to disk at all.
+
+    Its only auth mechanism for a streamable-HTTP server is
+    `bearer_token_env_var`. If the institute wants the credential in some other
+    header, codex cannot express it — say so and stay out rather than configure
+    a server that will 401 inside the model's tool loop."""
+    if cfg["header"].lower() != "authorization" or cfg["scheme"] != "Bearer ":
+        return McpPlan(note="codex supports only Authorization: Bearer — header %r not expressible"
+                            % (cfg["scheme"] + cfg["header"]))
+    n = cfg["name"]
+    args = [
+        "-c", f'mcp_servers.{n}.url="{cfg["url"]}"',
+        "-c", f'mcp_servers.{n}.bearer_token_env_var="{_KEY_VAR}"',
+        # Bound the wait so an MCP that is down costs seconds, not the task.
+        "-c", f"mcp_servers.{n}.startup_timeout_sec=10",
+    ]
+    return McpPlan(args=args, env={_KEY_VAR: cfg["key"]}, note=f"-c mcp_servers.{n}.*")
+
+
+_WRITERS = {"opencode": _prepare_opencode, "claude": _prepare_claude, "codex": _prepare_codex}
 
 
 def prepare(hand: str, workspace_dir: str) -> McpPlan:
