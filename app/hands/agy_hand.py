@@ -30,6 +30,7 @@ import tempfile
 import time
 from typing import Optional, Callable, Any
 
+from app.mcp_config import prepare as mcp_prepare
 from app.hands.base import Hand, HandResult, filter_noise, resolve_cli_path, get_cli_env, utf8_stream_decoder
 from app.hands.stream_processor import AgyStreamProcessor
 
@@ -192,6 +193,14 @@ class AgyHand(Hand):
         os.makedirs(workspace_dir, exist_ok=True)
         await self._ensure_git(workspace_dir)
 
+        # Second delivery path, inert unless AI_INSTITUTE_MCP_URL is set; the R2
+        # pre-stage in task_puller still runs regardless. agy has no per-task MCP
+        # scope, so this maintains a node-global registry entry idempotently
+        # rather than passing anything on the command line. See app/mcp_config.py.
+        mcp_plan = mcp_prepare("agy", workspace_dir)
+        spawn_env = get_cli_env(workspace_dir)
+        spawn_env.update(mcp_plan.env)
+
         cmd = resolve_cli_path("agy")
         # NOTE on flags:
         #  - `--print` (a.k.a. `--prompt`) is a value-taking flag — it consumes
@@ -280,7 +289,7 @@ class AgyHand(Hand):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workspace_dir,
-                env=get_cli_env(workspace_dir),
+                env=spawn_env,
             )
         except Exception as e:
             msg = f"Failed to spawn agy: {e}"

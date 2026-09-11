@@ -24,7 +24,7 @@ Environment:
     AI_INSTITUTE_MCP_SCHEME  value prefix. Default "Bearer " for Authorization,
                              empty for anything else.
     AI_INSTITUTE_MCP_NAME    server name the model sees. Default "ai-institute".
-    AI_INSTITUTE_MCP_HANDS   comma list of hands to configure. Default "opencode,claude,codex".
+    AI_INSTITUTE_MCP_HANDS   comma list of hands to configure. Default "opencode,claude,codex,agy".
 
 Stage 1 covers opencode, claude and codex — the hands with a genuinely per-task
 configuration surface, each verified on a real node: a project-local opencode.json
@@ -32,11 +32,11 @@ shows up in `opencode mcp list`; claude takes --mcp-config; codex takes -c dotte
 overrides, and a deliberately unreachable URL logged a transport error and let the
 task finish, which is the fallback behaviour this needs.
 
-Not covered: gemini keeps MCP servers in settings.json and its per-project form is
-unverified, and it currently fails on gubei12 for an unrelated reason (untrusted
-directory). agy exposes only a global `agy mcp` registry, which is not per-task
-and needs a different answer. Both get an empty plan and a note, never a
-half-configuration.
+agy is covered too, but differently: it has no per-task scope at all, so its entry
+is node-global. See _prepare_agy.
+
+Not covered: gemini. It is obsolete — agy replaced it — and it has drawn zero of
+the last 500 fleet tasks. It gets an empty plan and a note.
 """
 import json
 import logging
@@ -53,7 +53,7 @@ _logger = logging.getLogger("mcp_config")
 # NAME of the variable and the spawn carries its value.
 _KEY_VAR = "AI_INSTITUTE_MCP_KEY"
 
-SUPPORTED_HANDS = ("opencode", "claude", "codex")
+SUPPORTED_HANDS = ("opencode", "claude", "codex", "agy")
 
 
 @dataclass
@@ -83,7 +83,7 @@ def settings() -> Optional[dict]:
     scheme = os.getenv("AI_INSTITUTE_MCP_SCHEME")
     if scheme is None:
         scheme = "Bearer " if header.lower() == "authorization" else ""
-    hands = [h.strip() for h in (os.getenv("AI_INSTITUTE_MCP_HANDS") or "opencode,claude,codex").split(",") if h.strip()]
+    hands = [h.strip() for h in (os.getenv("AI_INSTITUTE_MCP_HANDS") or "opencode,claude,codex,agy").split(",") if h.strip()]
     return {
         "url": url,
         "key": key,
@@ -106,19 +106,35 @@ def _headers(cfg: dict, ref: str) -> dict:
     return {cfg["header"]: cfg["scheme"] + ref}
 
 
+def _load_json_or_empty(path: str):
+    """Existing JSON document, {} when absent or blank, None when it is really
+    malformed.
+
+    The blank case is not hypothetical: gubei12 has carried a zero-byte
+    ~/.gemini/config/mcp_config.json since May. json.load raises on it, and an
+    earlier version of this module read that as "unreadable" and quietly declined
+    to configure the hand — the feature would have looked switched on and done
+    nothing on the one node that runs agy most.
+    """
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read().strip()
+        return (json.loads(text) or {}) if text else {}
+    except Exception:
+        return None
+
+
 def _prepare_opencode(cfg: dict, workspace_dir: str) -> McpPlan:
     """opencode reads opencode.json from its PROJECT directory, which is the
     workspace (verified: a project-local file shows up in `opencode mcp list`).
     Merge rather than overwrite — a task may legitimately ship its own config."""
     path = os.path.join(workspace_dir, "opencode.json")
-    doc = {}
-    if os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as fh:
-                doc = json.load(fh) or {}
-        except Exception as e:
-            # Do not clobber something we failed to parse.
-            return McpPlan(note=f"opencode.json present but unreadable ({e}) — MCP not configured")
+    doc = _load_json_or_empty(path)
+    if doc is None:
+        # Do not clobber something we failed to parse.
+        return McpPlan(note="opencode.json present but unparseable — MCP not configured")
     doc.setdefault("$schema", "https://opencode.ai/config.json")
     doc.setdefault("mcp", {})[cfg["name"]] = {
         "type": "remote",
@@ -172,7 +188,73 @@ def _prepare_codex(cfg: dict, workspace_dir: str) -> McpPlan:
     return McpPlan(args=args, env={_KEY_VAR: cfg["key"]}, note=f"-c mcp_servers.{n}.*")
 
 
-_WRITERS = {"opencode": _prepare_opencode, "claude": _prepare_claude, "codex": _prepare_codex}
+_AGY_CONFIG = "~/.gemini/config/mcp_config.json"
+
+
+def _prepare_agy(cfg: dict, workspace_dir: str) -> McpPlan:
+    """agy keeps MCP servers in one global registry at ~/.gemini/config/mcp_config.json
+    — it is a gemini-CLI descendant, which is what it replaced.
+
+    There is no per-task scope. Measured on gubei12: a workspace-local
+    .gemini/config/mcp_config.json is ignored even when agy runs from that
+    workspace, and none of GEMINI_CONFIG_DIR, GEMINI_DIR, AGY_HOME,
+    AGY_CONFIG_DIR or XDG_CONFIG_HOME redirects the lookup. Overriding HOME does
+    work, but HOME is also where agy keeps its credentials, so that trade is not
+    available.
+
+    So this entry is node-global rather than per-task. It is written idempotently
+    and touches only our own server name, leaving any other server alone.
+
+    The credential: `agy mcp add` creates this file 0644 — world-readable — so the
+    token must not be written literally. The header carries an env reference and
+    the spawn carries the value, and the file is forced to 0600 regardless.
+    Whether agy expands ${VAR} in a header at connect time is the one thing here
+    that could not be verified without a live endpoint; if the smoke test comes
+    back 401, set AI_INSTITUTE_MCP_AGY_LITERAL=1 to write the token itself
+    instead, still at 0600.
+    """
+    path = os.path.expanduser(_AGY_CONFIG)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    doc = _load_json_or_empty(path)
+    if doc is None:
+        return McpPlan(note=f"{_AGY_CONFIG} present but unparseable — MCP not configured")
+    literal = (os.getenv("AI_INSTITUTE_MCP_AGY_LITERAL") or "").lower() in ("1", "true", "yes")
+    ref = cfg["key"] if literal else "${%s}" % _KEY_VAR
+    entry = {"disabled": False, "serverUrl": cfg["url"], "headers": _headers(cfg, ref)}
+    servers = doc.setdefault("mcpServers", {})
+    if servers.get(cfg["name"]) == entry:
+        # Already correct. Say so rather than rewriting the file on every task.
+        return McpPlan(env={_KEY_VAR: cfg["key"]}, note="agy registry already current")
+    servers[cfg["name"]] = entry
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, ensure_ascii=False, indent=2)
+    os.chmod(path, 0o600)
+    return McpPlan(env={_KEY_VAR: cfg["key"]},
+                   note="%s <- %s (node-global%s)" % (_AGY_CONFIG, cfg["name"],
+                                                      ", literal key" if literal else ""))
+
+
+def remove_agy_entry() -> str:
+    """Undo _prepare_agy. The agy registry is node-global, so turning the feature
+    off in .env is not enough to stop agy offering the server — this is how the
+    entry actually goes away."""
+    path = os.path.expanduser(_AGY_CONFIG)
+    if not os.path.exists(path):
+        return "no agy registry"
+    name = (os.getenv("AI_INSTITUTE_MCP_NAME") or "ai-institute").strip()
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh) or {}
+    if name not in (doc.get("mcpServers") or {}):
+        return f"{name} not in agy registry"
+    del doc["mcpServers"][name]
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, ensure_ascii=False, indent=2)
+    os.chmod(path, 0o600)
+    return f"removed {name} from {_AGY_CONFIG}"
+
+
+_WRITERS = {"opencode": _prepare_opencode, "claude": _prepare_claude,
+            "codex": _prepare_codex, "agy": _prepare_agy}
 
 
 def prepare(hand: str, workspace_dir: str) -> McpPlan:
