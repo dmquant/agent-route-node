@@ -128,3 +128,37 @@ not needed.
 (their point 4 — a proposed `<INSTITUTE_FILES>` block, offered for rejection). Until
 that lands, the MCP is reachable but nothing tells a model which files to ask for,
 so this window tests the plumbing, not the delivery.
+
+## Design change: the node fetches the files, not the model
+
+The operator's call, and it is the better shape. The node parses `<INSTITUTE_FILES>`,
+fetches exactly the named files from the institute as a plain HTTP client, writes
+them into the workspace, and **verifies every one arrived before the hand is
+called at all.**
+
+Why this beats letting each hand fetch over MCP:
+
+- **A failure costs milliseconds instead of half an hour.** A fetch that fails
+  inside a model's tool loop reads as "I could not look", which is what sends a
+  model hunting — four tasks, 25–30 minutes each, $3.04, no output. A fetch that
+  fails in the node produces a task failure a person can read, with no model time
+  spent.
+- **One code path for every hand.** Doing it in the hands meant four configuration
+  surfaces, three tool namespaces, and codex locked out entirely because it can
+  only carry a credential as `Authorization: Bearer`, which the institute rejects.
+  The node has no such limit: it is an HTTP client with a token that works.
+- **Only the named files move.** No eager pull of a 33-file session for a task
+  that needs one.
+- **The prompt can assert completeness.** The block is rewritten with local paths
+  and a statement that the contents are complete and there is nothing to search
+  for — a short manifest the node verified is much harder to disbelieve than a
+  wall of inlined text.
+
+MCP stays configured for the institute's other 46 tools — `chain_graph_stats`,
+`thesis_evidence`, `portfolio_get` and the rest. Those are mid-reasoning lookups
+nobody can pre-stage. It is specifically file delivery that moved.
+
+Measured live on Studio02: two real files staged (22,567 and 49,250 bytes), prompt
+rewritten, model read from disk. A named file that does not exist fails staging
+with `not_found` and the task is not run. A/B with MCP on and off for opencode
+showed no slowdown from having it configured (83.5s / 105.0s / 31.5s, all exit 0).
