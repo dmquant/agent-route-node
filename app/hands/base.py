@@ -109,13 +109,21 @@ def resolve_cli_path(binary: str) -> str:
     return binary
 
 
-def get_cli_env() -> dict:
+def get_cli_env(cwd: str = "") -> dict:
     """Build a subprocess environment that mirrors a real login shell.
 
     CLI tools (claude, gemini, codex) authenticate via their own login sessions
     stored in config directories (~/.claude, ~/.config/gemini, etc.).
     The subprocess must have the correct HOME, XDG paths, and full PATH
     so the CLI tools can find their auth tokens.
+
+    Pass `cwd` whenever the subprocess is spawned with `cwd=`. The daemon runs
+    from the node repo, so both the login shell below and os.environ carry that
+    path in PWD, and asyncio's `cwd=` changes the real working directory
+    without touching the variable. Tools that trust PWD over getcwd() then
+    resolve their project to the node repo -- measured on opencode: same
+    binary, same git-initialised directory, only PWD differing, and
+    session.directory follows PWD every time.
     """
     # Start from a login shell's full environment — not the stripped venv env.
     # This ensures CLI auth sessions, PATH, and all config are available.
@@ -147,6 +155,12 @@ def get_cli_env() -> dict:
     env["HOME"] = home
     env.setdefault("USER", os.getenv("USER", ""))
     env.setdefault("SHELL", os.getenv("SHELL", "/bin/bash"))
+
+    # A subprocess spawned with cwd= must be told about it. Without this the
+    # inherited PWD wins and the tool works in the wrong directory.
+    if cwd:
+        env["PWD"] = cwd
+        env.pop("OLDPWD", None)
 
     # Ensure XDG dirs are set (some tools use these for config)
     env.setdefault("XDG_CONFIG_HOME", os.path.join(home, ".config"))

@@ -266,11 +266,12 @@ class OpencodeHand(Hand):
 
         os.makedirs(workspace_dir, exist_ok=True)
 
-        # opencode resolves its PROJECT from a git worktree, not from cwd. With no .git here the
-        # workspace is not a project, so opencode attaches to ~/.agent-route/node -- a shared
-        # directory holding thousands of prior outputs -- and relative-path writes land there
-        # instead of in the session workspace. lsof confirms cwd is correct; opencode.db's
-        # session.directory shows the repo. agy_hand.py has always done this.
+        # Make the workspace a git worktree so opencode treats it as a project
+        # rather than a loose directory. This alone does NOT fix project
+        # resolution -- measured: a git-initialised workspace still attached to
+        # ~/.agent-route/node until PWD was corrected in get_cli_env. Kept
+        # because opencode's project features want a worktree, and agy_hand.py
+        # has always done it.
         await self._ensure_git(workspace_dir)
 
         if on_log:
@@ -287,7 +288,7 @@ class OpencodeHand(Hand):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workspace_dir,
-                env=get_cli_env(),
+                env=get_cli_env(workspace_dir),
             )
         except Exception as e:
             msg = f"Failed to spawn opencode: {e}"

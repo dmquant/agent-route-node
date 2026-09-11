@@ -138,7 +138,7 @@ class GeminiHand(Hand):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workspace_dir,
-                env=get_cli_env(),
+                env=get_cli_env(workspace_dir),
             )
         except Exception as e:
             msg = f"Failed to spawn gemini: {e}"
