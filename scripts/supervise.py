@@ -49,8 +49,14 @@ try:
 except Exception as e:
     check("hands enumerable", None, repr(e)[:60])
 
+# LF: third time for this shape. If the enumeration could not be READ, the checks
+# that depend on it are unknown -- not failed. Asserting "no enabled hands" when the
+# daemon simply had not finished starting is the same conflation of unreachable with
+# unhealthy that the three-state check() was added for, committed one level down.
 enabled = [n for n, v in hands.items() if v.get("enabled")]
-if enabled:
+if not hands:
+    check("hand checks", None, "hands could not be read — skipped, not failed")
+elif enabled:
     # 2. the CLI each enabled hand needs resolves WITHOUT relying on PATH -- the
     #    2026-09-09 outage, where opencode was unfindable for 20 minutes while
     #    /api/agents answered 200 throughout.
@@ -71,7 +77,8 @@ if enabled:
     for n in sorted(enabled):
         check("%s: health_check" % n, hands[n].get("healthy"))
 else:
-    check("any hand enabled", False, "no enabled hands reported")
+    # hands WERE read and every one is disabled. That is a real finding.
+    check("any hand enabled", False, "%d registered, none enabled" % len(hands))
 
 # 4. placement state -- a healthy node excluded from work is still a failure
 try:
