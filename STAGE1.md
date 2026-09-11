@@ -96,3 +96,35 @@ server.
 Smoke, all through the launchd daemon rather than an ssh shell:
 opencode `SMOKE-OK`, codex `SMOKE-OK`, claude `CLAUDE-OK`, agy `AGY-OK`, all exit 0,
 with the feature off and nothing written.
+
+## Smoke window — actually started 2026-09-11 11:29 +08
+
+Until now it had not. The code was deployed and inert, and the MCP could not be
+exercised because there was no endpoint. ai-institute answered (`44fec001`), and
+the gate cleared:
+
+- **Endpoint**: `POST https://ai-institute-worker.dmquant.workers.dev/api/mcp`, JSON-RPC 2.0 over HTTP, stateless. 48 tools.
+- **Auth**: the node's own `NODE_TOKEN` **is** an institute `nk_` token. Tested, not assumed. All three header forms return 200 — `X-Admin-Token`, `X-API-Key` and `Authorization: Bearer` — so the default config covers codex too, which can only send Bearer.
+- **Tools verified live**: `sessions_get_files` returns a real file list; `sessions_workspace_read` returns content; the absence path returns `content: null` with an explicit status.
+
+Enabled on Studio02 and gubei12 (`AI_INSTITUTE_MCP_URL` in the data-dir `.env`).
+The R2 pre-stage is untouched and still running.
+
+**All four hands see the server, live, each exit 0:**
+
+| hand | node | saw |
+|---|---|---|
+| opencode | Studio02 | `ai-institute_sessions_get_files`, `ai-institute_sessions_workspace_read` |
+| agy | gubei12 | `sessions_workspace_read` |
+| codex | gubei12 | `mcp__ai_institute__sessions_workspace_read` |
+| claude | gubei12 | see run log |
+
+The two things that could only be verified with a live endpoint both hold: opencode
+expands `{env:VAR}` and agy expands `${VAR}` in a header. The registry on gubei12
+carries the reference, not the token, at 0600. `AI_INSTITUTE_MCP_AGY_LITERAL` is
+not needed.
+
+**Still open**: ai-institute has not settled how a prompt names the files to fetch
+(their point 4 — a proposed `<INSTITUTE_FILES>` block, offered for rejection). Until
+that lands, the MCP is reachable but nothing tells a model which files to ask for,
+so this window tests the plumbing, not the delivery.
