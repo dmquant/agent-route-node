@@ -11,6 +11,7 @@ import json
 import shutil
 from typing import Optional, Callable, Any
 
+from app.mcp_config import prepare as mcp_prepare
 from app.hands.base import Hand, HandResult, filter_noise, _NOISE_PATTERNS, resolve_cli_path, get_cli_env, utf8_stream_decoder
 from app.hands.stream_processor import ClaudeStreamProcessor
 from app.hands.activity_classifier import classify_line
@@ -42,10 +43,18 @@ class ClaudeHand(Hand):
         chosen_model = model or os.getenv("CLAUDE_DEFAULT_MODEL")
         if chosen_model:
             args.extend(["--model", chosen_model])
+        # Second delivery path, inert unless AI_INSTITUTE_MCP_URL is set; the R2
+        # pre-stage in task_puller still runs regardless. See app/mcp_config.py.
+        # These are flags, so they must go in before the prompt positional --
+        # appending after `input` would have them parsed as part of the prompt.
+        os.makedirs(workspace_dir, exist_ok=True)
+        mcp_plan = mcp_prepare("claude", workspace_dir)
+        args.extend(mcp_plan.args)
         args.append(input)
 
-        os.makedirs(workspace_dir, exist_ok=True)
         await self._ensure_git(workspace_dir)
+        spawn_env = get_cli_env(workspace_dir)
+        spawn_env.update(mcp_plan.env)
 
         processor = ClaudeStreamProcessor()
 
@@ -67,7 +76,7 @@ class ClaudeHand(Hand):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workspace_dir,
-                env=get_cli_env(workspace_dir),
+                env=spawn_env,
             )
         except Exception as e:
             msg = f"Failed to spawn claude: {e}"

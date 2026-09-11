@@ -15,7 +15,12 @@ from app.config import get_workspaces_dir, get_data_dir
 WORKSPACES_DIR = get_workspaces_dir()
 STATE_FILE = os.path.join(get_data_dir(), '.workspace_sync_state.json')
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
-IGNORE_PATTERNS = {'.git', '__pycache__', 'node_modules', '.DS_Store', '.venv', '.env', '.antigravitycli'}
+IGNORE_PATTERNS = {'.git', '__pycache__', 'node_modules', '.DS_Store', '.venv', '.env', '.antigravitycli',
+                   # Written by app/mcp_config.py into the workspace. Node-local
+                   # CLI configuration, not task output -- and belt-and-braces
+                   # against ever shipping a credential to R2, even though the
+                   # file carries an env reference rather than the value.
+                   'opencode.json', '.mcp.json'}
 
 _sync_state: dict[str, float] = {}  # file_key -> last synced mtime
 

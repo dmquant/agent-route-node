@@ -47,6 +47,7 @@ import os
 from collections import Counter
 from typing import Optional, Callable, Any
 
+from app.mcp_config import prepare as mcp_prepare
 from app.hands.base import (
     Hand, HandResult, _NOISE_PATTERNS, resolve_cli_path, get_cli_env,
     utf8_stream_decoder,
@@ -274,6 +275,13 @@ class OpencodeHand(Hand):
         # has always done it.
         await self._ensure_git(workspace_dir)
 
+        # Second delivery path, inert unless AI_INSTITUTE_MCP_URL is set. The R2
+        # pre-stage in task_puller still runs either way; this only adds a server
+        # the model may call. See app/mcp_config.py.
+        mcp_plan = mcp_prepare("opencode", workspace_dir)
+        spawn_env = get_cli_env(workspace_dir)
+        spawn_env.update(mcp_plan.env)
+
         if on_log:
             short_dir = os.path.basename(workspace_dir)[:12]
             await on_log(json.dumps({
@@ -293,7 +301,7 @@ class OpencodeHand(Hand):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workspace_dir,
-                env=get_cli_env(workspace_dir),
+                env=spawn_env,
             )
         except Exception as e:
             msg = f"Failed to spawn opencode: {e}"
