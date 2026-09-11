@@ -34,20 +34,44 @@ pids = subprocess.run(["pgrep", "-f", "uvicorn app.main:app --host 0.0.0.0 --por
                       capture_output=True, text=True).stdout.split()
 check("daemon", bool(pids), "pid " + (pids[0] if pids else "none"))
 
-# 2. the CLI resolves WITHOUT relying on PATH -- the 2026-09-09 outage
+# 2 and 3 used to be hard-coded to opencode, which made this script report FAIL on
+# every node that does not run it -- sg01 runs gemini/agy/claude/codex and was told
+# it was broken while all four were healthy. The first repair was worse: it read the
+# hand registry, which is empty outside the daemon process, so both checks silently
+# vanished and the script reported HEALTHY while testing nothing. Ask the DAEMON what
+# it has, because the daemon is the thing whose view decides whether work runs.
+hands = {}
 try:
-    from app.hands.base import resolve_cli_path
-    p = resolve_cli_path("opencode")
-    check("opencode resolvable", bool(p), p or "not found")
+    req = urllib.request.Request("http://localhost:8017/api/hands/health",
+                                 headers={"User-Agent": "agent-route-node/supervise"})
+    hands = json.load(urllib.request.urlopen(req, timeout=20)).get("health", {})
+    check("hands enumerable", bool(hands), "%d registered" % len(hands))
 except Exception as e:
-    check("opencode resolvable", False, repr(e)[:60])
+    check("hands enumerable", None, repr(e)[:60])
 
-# 3. the hand itself, not the endpoint
-try:
-    from app.hands.opencode_hand import OpencodeHand
-    check("hand health_check", asyncio.run(OpencodeHand().health_check()))
-except Exception as e:
-    check("hand health_check", False, repr(e)[:60])
+enabled = [n for n, v in hands.items() if v.get("enabled")]
+if enabled:
+    # 2. the CLI each enabled hand needs resolves WITHOUT relying on PATH -- the
+    #    2026-09-09 outage, where opencode was unfindable for 20 minutes while
+    #    /api/agents answered 200 throughout.
+    try:
+        from app.hands.base import resolve_cli_path
+        for n in sorted(enabled):
+            binary = {"claude": "npx", "codex": "npx"}.get(n, n)
+            path = resolve_cli_path(binary)
+            check("%s -> %s resolvable" % (n, binary),
+                  bool(path) and (os.path.isfile(path) or "/" not in path),
+                  path or "not found")
+    except Exception as e:
+        check("CLI resolvable", False, repr(e)[:60])
+
+    # 3. the hands themselves, as the daemon sees them. Not proof of execution --
+    #    claude reported healthy on sg01 while an ssh-launched copy could not read
+    #    the keychain -- but it is the hand and not the endpoint.
+    for n in sorted(enabled):
+        check("%s: health_check" % n, hands[n].get("healthy"))
+else:
+    check("any hand enabled", False, "no enabled hands reported")
 
 # 4. placement state -- a healthy node excluded from work is still a failure
 try:

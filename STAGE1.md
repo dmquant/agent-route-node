@@ -42,13 +42,35 @@ endpoint URL and transport, whether NODE_TOKEN authenticates and in which header
 the tool surface, and how the prompt names files. Turning it on is then two lines
 in `~/.agent-route/.env` on the two smoke nodes.
 
-## Defects found while deploying, not caused by it
+## Corrections to an earlier version of this file
 
-1. **claude OAuth is dead on both SG and gubei12** — `OAuth session expired and
-   could not be refreshed`. Verified identical with the old and new PWD. Both
-   nodes still advertise `claude`, so agent-route routes claude tasks to hands
-   that cannot run. Needs an interactive login by the operator.
-2. **gemini fails on gubei12** — `not running in a trusted directory`. Needs
-   `--skip-trust` or `GEMINI_CLI_TRUST_WORKSPACE=true` in the hand.
-3. **Neither SG nor gubei12 has the launchd supervisor** — both daemons run
-   manually, which is the condition behind the studio03 outage.
+An earlier version claimed claude's OAuth was dead on SG and gubei12. **That was
+wrong.** The test was run over ssh, and a process descended from an ssh session
+cannot read the macOS keychain where Claude Code keeps its OAuth credential:
+`security find-generic-password -w` exits 36 and the keychain answers "User
+interaction is not allowed." Production evidence contradicted the claim the whole
+time — SG 15/15 and gubei12 22/23 claude tasks at exit 0.
+
+Worse, the claim was self-inflicted. Restarting both daemons from an ssh session
+put them in an environment that cannot reach the keychain, so claude really was
+broken on both — by the restart, not by anything pre-existing. Both are now under
+the launchd GUI-domain agent, and claude executed inside the daemon returns
+`CLAUDE-OK` at exit 0 on both. Task flow confirms recovery: gubei12 16/16 and SG
+15/15 at exit 0 in the hour after.
+
+This is the third time the same shape has cost something here: **launchd and a
+terminal are different environments** — PATH, then stdin, now the keychain. A test
+run over ssh is not a test of production.
+
+## Open, genuinely
+
+1. **gemini on sg01 fails** — exit 1 inside `_doSetupUser`. Pre-existing, needs an
+   interactive login. On gubei12 gemini is disabled in `.env`, so the earlier
+   "trusted directory" note there was about a hand that is not routed at all.
+2. **vane health_check fails on studio02** — found only once the supervisor stopped
+   assuming every node runs opencode.
+3. **The supervisor was studio-shaped.** It hard-coded opencode and so reported FAIL
+   on sg01 while all four of its hands were healthy. The first repair was worse: it
+   read the hand registry, which is empty outside the daemon, so both checks
+   silently disappeared and the script reported HEALTHY having tested nothing. It
+   now asks the daemon what it runs and checks those.
