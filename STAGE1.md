@@ -64,9 +64,11 @@ run over ssh is not a test of production.
 
 ## Open, genuinely
 
-1. **gemini on sg01 fails** — exit 1 inside `_doSetupUser`. Pre-existing, needs an
-   interactive login. On gubei12 gemini is disabled in `.env`, so the earlier
-   "trusted directory" note there was about a hand that is not routed at all.
+1. ~~gemini~~ — **withdrawn as a defect.** gemini is obsolete: Google DeepMind
+   retired the CLI and agy replaced it. It has drawn **zero of the last 500 fleet
+   tasks**. Reporting it as a defect while deferring agy had the priorities exactly
+   backwards; agy carries 139 of those 500 across SG and gubei12 at zero failures
+   and is now a stage-1 hand.
 2. **vane health_check fails on studio02** — found only once the supervisor stopped
    assuming every node runs opencode.
 3. **The supervisor was studio-shaped.** It hard-coded opencode and so reported FAIL
@@ -74,3 +76,23 @@ run over ssh is not a test of production.
    read the hand registry, which is empty outside the daemon, so both checks
    silently disappeared and the script reported HEALTHY having tested nothing. It
    now asks the daemon what it runs and checks those.
+
+
+## Hand coverage, and why
+
+| hand | tasks in last 500 | MCP scope | stage 1 |
+|---|---|---|---|
+| codex | 164 | `-c` dotted overrides, nothing on disk | yes |
+| opencode | 159 | project-local `opencode.json` | yes |
+| agy | 139 | **node-global** `~/.gemini/config/mcp_config.json` | yes |
+| claude | 38 | `--mcp-config` + `--strict-mcp-config` | yes |
+| gemini | 0 | — obsolete, replaced by agy | no |
+
+agy is the odd one: no per-task scope exists, so its entry is node-global, written
+idempotently, touching only our own server name. `remove_agy_entry()` is how it
+goes away, because clearing `.env` does not stop a global registry offering a
+server.
+
+Smoke, all through the launchd daemon rather than an ssh shell:
+opencode `SMOKE-OK`, codex `SMOKE-OK`, claude `CLAUDE-OK`, agy `AGY-OK`, all exit 0,
+with the feature off and nothing written.
