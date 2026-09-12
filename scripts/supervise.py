@@ -29,6 +29,17 @@ def check(name, ok, detail=""):
     if ok is False:
         fail.append(name)
 
+def _dotenv() -> dict:
+    """The node's real configuration lives in ~/.agent-route/.env, never the copy
+    inside the repo -- those two have drifted before and the repo one was wrong."""
+    try:
+        with open(os.path.expanduser("~/.agent-route/.env")) as fh:
+            return dict(l.strip().split("=", 1) for l in fh
+                        if "=" in l and not l.strip().startswith("#"))
+    except Exception:
+        return {}
+
+
 # 1. the daemon exists. nothing restarts it if it does not.
 pids = subprocess.run(["pgrep", "-f", "uvicorn app.main:app --host 0.0.0.0 --port 8017"],
                       capture_output=True, text=True).stdout.split()
@@ -77,8 +88,20 @@ elif enabled:
     for n in sorted(enabled):
         check("%s: health_check" % n, hands[n].get("healthy"))
 else:
-    # hands WERE read and every one is disabled. That is a real finding.
-    check("any hand enabled", False, "%d registered, none enabled" % len(hands))
+    # hands WERE read and every one is disabled. Whether that is a fault or the
+    # point depends on intent, and intent is not inferable from a config file --
+    # so it is declared. NODE_DRAINED=true means the operator took this node out
+    # of service deliberately; without it, a node with no enabled hands is a node
+    # registered to do nothing, which is a real finding.
+    # Read from the data-dir .env, not the process environment. This script is run
+    # by hand and by launchd, and neither loads that file -- an earlier version
+    # checked os.getenv and the flag silently never applied. Same shape as every
+    # other slip this week: the value was set and the reader looked elsewhere.
+    drained = (_dotenv().get("NODE_DRAINED") or "").strip().strip('"').lower() in ("1", "true", "yes")
+    if drained:
+        check("drained on purpose", True, "%d registered, none enabled — NODE_DRAINED=true" % len(hands))
+    else:
+        check("any hand enabled", False, "%d registered, none enabled" % len(hands))
 
 # 4. placement state -- a healthy node excluded from work is still a failure
 try:
