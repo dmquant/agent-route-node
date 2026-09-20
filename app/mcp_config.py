@@ -135,8 +135,68 @@ def settings() -> Optional[dict]:
         "name": (os.getenv("AI_INSTITUTE_MCP_NAME") or "ai-institute").strip(),
         "header": header,
         "scheme": scheme,
+        # Each server names its OWN env var. Two servers sharing one would put
+        # the second's credential in the first's variable, which is how a node
+        # ends up presenting a credential that is not the one its config names
+        # -- the shape that cost this federation an evening on 2026-09-20.
+        "key_var": _KEY_VAR,
         "hands": hands,
     }
+
+
+# THE SECOND GOVERNED SERVER.
+#
+# ros-gateway fronts the same federation (institute, rho, epistates) and
+# authenticates DIFFERENTLY, which is the whole reason it matters here:
+#
+#   measured 2026-09-20, four arms one variable apart, on tools/CALL --
+#     Authorization: Bearer alone   -> HTTP 200
+#     X-Institute-Token alone       -> HTTP 401 "no bearer token"
+#     no auth                       -> HTTP 401
+#
+# Bearer is the ONLY credential form codex can express, and the institute
+# rejects Bearer. So the hand this module has had to decline since 2026-09-11
+# is exactly the hand this endpoint is reachable by, and governed coverage goes
+# from 3 of 4 to 4 of 4 through it.
+#
+# The header is NOT read from the environment. Every other knob here is, and
+# that is right for a value that might change; this one was measured and an
+# operator who "corrects" it to X-Institute-Token silently disables codex again.
+_GATEWAY_KEY_VAR = "ROS_GATEWAY_MCP_KEY"
+
+
+def gateway_settings() -> Optional[dict]:
+    """The ros-gateway server, or None when it is not configured on this node."""
+    url = (os.getenv("ROS_GATEWAY_MCP_URL") or "").strip()
+    if not url:
+        return None
+    key = (os.getenv(_GATEWAY_KEY_VAR) or os.getenv("NODE_TOKEN") or "").strip()
+    if not key:
+        _logger.warning("ROS_GATEWAY_MCP_URL is set but no credential is available "
+                        "— the gateway server is not configured")
+        return None
+    hands = [h.strip() for h in
+             (os.getenv("ROS_GATEWAY_MCP_HANDS") or "opencode,claude,codex,agy").split(",")
+             if h.strip()]
+    return {"url": url, "key": key,
+            "name": (os.getenv("ROS_GATEWAY_MCP_NAME") or "ros-gateway").strip(),
+            "header": "Authorization", "scheme": "Bearer ",
+            "key_var": _GATEWAY_KEY_VAR, "hands": hands}
+
+
+def servers_for(hand: str) -> list:
+    """Every governed server this hand should be given, in a stable order.
+
+    Two servers rather than one is the point: they authenticate differently and
+    reach overlapping estates, so a hand excluded from one may still be served
+    by the other. Ordered institute-first so a hand that can take only some of
+    them takes the primary one.
+    """
+    out = []
+    for cfg in (settings(), gateway_settings()):
+        if cfg and hand in cfg["hands"]:
+            out.append(cfg)
+    return out
 
 
 def _mcp_dir() -> str:
@@ -149,6 +209,11 @@ def _mcp_dir() -> str:
 
 def _headers(cfg: dict, ref: str) -> dict:
     return {cfg["header"]: cfg["scheme"] + ref}
+
+
+def _env_for(servers: list) -> dict:
+    """Each server's credential under its OWN variable name."""
+    return {c["key_var"]: c["key"] for c in servers}
 
 
 def _load_json_or_empty(path: str):
@@ -171,7 +236,7 @@ def _load_json_or_empty(path: str):
         return None
 
 
-def _prepare_opencode(cfg: dict, workspace_dir: str) -> McpPlan:
+def _prepare_opencode(servers: list, workspace_dir: str) -> McpPlan:
     """opencode reads opencode.json from its PROJECT directory, which is the
     workspace (verified: a project-local file shows up in `opencode mcp list`).
     Merge rather than overwrite — a task may legitimately ship its own config."""
@@ -181,62 +246,92 @@ def _prepare_opencode(cfg: dict, workspace_dir: str) -> McpPlan:
         # Do not clobber something we failed to parse.
         return McpPlan(note="opencode.json present but unparseable — MCP not configured")
     doc.setdefault("$schema", "https://opencode.ai/config.json")
-    doc.setdefault("mcp", {})[cfg["name"]] = {
-        "type": "remote",
-        "url": cfg["url"],
-        "enabled": True,
-        "headers": _headers(cfg, "{env:%s}" % _KEY_VAR),
-    }
+    mcp = doc.setdefault("mcp", {})
+    for cfg in servers:
+        mcp[cfg["name"]] = {
+            "type": "remote",
+            "url": cfg["url"],
+            "enabled": True,
+            "headers": _headers(cfg, "{env:%s}" % cfg["key_var"]),
+        }
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, ensure_ascii=False, indent=2)
-    return McpPlan(env={_KEY_VAR: cfg["key"]}, note=f"opencode.json <- mcp.{cfg['name']}")
+    return McpPlan(env=_env_for(servers),
+                   note="opencode.json <- mcp.%s" % ", mcp.".join(c["name"] for c in servers))
 
 
-def _prepare_claude(cfg: dict, workspace_dir: str) -> McpPlan:
+def _prepare_claude(servers: list, workspace_dir: str) -> McpPlan:
     """claude takes --mcp-config with a path, so the file goes outside the
     workspace and never reaches R2. --strict-mcp-config stops the task also
     inheriting whatever MCP servers the host happens to have configured, which
     would make one node's behaviour differ from another's."""
     name = os.path.basename(workspace_dir.rstrip("/")) or "task"
     path = os.path.join(_mcp_dir(), f"{name}.json")
-    doc = {"mcpServers": {cfg["name"]: {
+    doc = {"mcpServers": {c["name"]: {
         "type": "http",
-        "url": cfg["url"],
-        "headers": _headers(cfg, "${%s}" % _KEY_VAR),
-    }}}
+        "url": c["url"],
+        "headers": _headers(c, "${%s}" % c["key_var"]),
+    } for c in servers}}
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, ensure_ascii=False, indent=2)
     os.chmod(path, 0o600)
     return McpPlan(args=["--mcp-config", path, "--strict-mcp-config"],
-                   env={_KEY_VAR: cfg["key"]},
-                   note=f"--mcp-config {path}")
+                   env=_env_for(servers),
+                   note="--mcp-config %s (%s)" % (path, ", ".join(c["name"] for c in servers)))
 
 
-def _prepare_codex(cfg: dict, workspace_dir: str) -> McpPlan:
+def _prepare_codex(servers: list, workspace_dir: str) -> McpPlan:
     """codex takes `-c` dotted overrides parsed as TOML, so the whole server can
     be declared on the command line with nothing written to disk at all.
 
     Its only auth mechanism for a streamable-HTTP server is
-    `bearer_token_env_var`. If the institute wants the credential in some other
-    header, codex cannot express it — say so and stay out rather than configure
-    a server that will 401 inside the model's tool loop."""
-    if cfg["header"].lower() != "authorization" or cfg["scheme"] != "Bearer ":
-        return McpPlan(note="codex supports only Authorization: Bearer — header %r not expressible"
-                            % (cfg["scheme"] + cfg["header"]))
-    n = cfg["name"]
-    args = [
-        "-c", f'mcp_servers.{n}.url="{cfg["url"]}"',
-        "-c", f'mcp_servers.{n}.bearer_token_env_var="{_KEY_VAR}"',
-        # Bound the wait so an MCP that is down costs seconds, not the task.
-        "-c", f"mcp_servers.{n}.startup_timeout_sec=10",
-    ]
-    return McpPlan(args=args, env={_KEY_VAR: cfg["key"]}, note=f"-c mcp_servers.{n}.*")
+    `bearer_token_env_var` -- it cannot express any other header.
+
+    THIS USED TO DECLINE OUTRIGHT, AND THAT WAS RIGHT WHILE THERE WAS ONE
+    SERVER. The institute rejects Bearer on tools/call (401, category auth,
+    measured three arms), so configuring codex for it would have handed a model
+    a server that 401s inside its tool loop -- the expensive failure, because a
+    model cannot tell an auth error from a missing file and starts hunting.
+
+    With a second governed server the question stops being about the HAND and
+    becomes about each SERVER. ros-gateway requires Bearer -- measured four arms
+    on tools/call, Authorization alone returns 200 -- so codex can reach it.
+    Declining every server because one is unreachable would keep codex at zero
+    tools when 73 are available to it.
+
+    So: configure what this hand can express, decline what it cannot, and say
+    which in the note. An empty result still declines, with the reason.
+    """
+    usable, declined = [], []
+    for cfg in servers:
+        if cfg["header"].lower() == "authorization" and cfg["scheme"] == "Bearer ":
+            usable.append(cfg)
+        else:
+            declined.append("%s (needs %s)" % (cfg["name"], cfg["scheme"] + cfg["header"]))
+
+    args = []
+    for cfg in usable:
+        n = cfg["name"]
+        args += [
+            "-c", f'mcp_servers.{n}.url="{cfg["url"]}"',
+            "-c", f'mcp_servers.{n}.bearer_token_env_var="{cfg["key_var"]}"',
+            # Bound the wait so an MCP that is down costs seconds, not the task.
+            "-c", f"mcp_servers.{n}.startup_timeout_sec=10",
+        ]
+
+    note = ""
+    if usable:
+        note = "-c mcp_servers.%s.*" % ".*, mcp_servers.".join(c["name"] for c in usable)
+    if declined:
+        note = (note + "; " if note else "") + \
+               "codex supports only Authorization: Bearer — declined " + ", ".join(declined)
+    return McpPlan(args=args, env=_env_for(usable), note=note)
 
 
 _AGY_CONFIG = "~/.gemini/config/mcp_config.json"
 
 
-def _prepare_agy(cfg: dict, workspace_dir: str) -> McpPlan:
+def _prepare_agy(servers: list, workspace_dir: str) -> McpPlan:
     """agy keeps MCP servers in one global registry at ~/.gemini/config/mcp_config.json
     — it is a gemini-CLI descendant, which is what it replaced.
 
@@ -264,18 +359,33 @@ def _prepare_agy(cfg: dict, workspace_dir: str) -> McpPlan:
     if doc is None:
         return McpPlan(note=f"{_AGY_CONFIG} present but unparseable — MCP not configured")
     literal = (os.getenv("AI_INSTITUTE_MCP_AGY_LITERAL") or "").lower() in ("1", "true", "yes")
-    ref = cfg["key"] if literal else "${%s}" % _KEY_VAR
-    entry = {"disabled": False, "serverUrl": cfg["url"], "headers": _headers(cfg, ref)}
-    servers = doc.setdefault("mcpServers", {})
-    if servers.get(cfg["name"]) == entry:
+    registry = doc.setdefault("mcpServers", {})
+    wanted = {}
+    for cfg in servers:
+        ref = cfg["key"] if literal else "${%s}" % cfg["key_var"]
+        wanted[cfg["name"]] = {"disabled": False, "serverUrl": cfg["url"],
+                               "headers": _headers(cfg, ref)}
+
+    # A LITERAL here is what made the 2026-09-20 transposition possible: two
+    # nodes held each other's token because the value, not a reference, sat in
+    # this file and the file travels between machines. An env reference is
+    # per-machine by construction -- the same file presents a different
+    # identity on each host -- so the escape hatch stays but says so.
+    if literal:
+        _logger.warning("AI_INSTITUTE_MCP_AGY_LITERAL writes credential VALUES into %s. "
+                        "That file is node-global and has been observed copied between "
+                        "hosts; a literal can therefore end up presenting another "
+                        "machine's identity.", _AGY_CONFIG)
+
+    if all(registry.get(n) == e for n, e in wanted.items()):
         # Already correct. Say so rather than rewriting the file on every task.
-        return McpPlan(env={_KEY_VAR: cfg["key"]}, note="agy registry already current")
-    servers[cfg["name"]] = entry
+        return McpPlan(env=_env_for(servers), note="agy registry already current")
+    registry.update(wanted)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, ensure_ascii=False, indent=2)
     os.chmod(path, 0o600)
-    return McpPlan(env={_KEY_VAR: cfg["key"]},
-                   note="%s <- %s (node-global%s)" % (_AGY_CONFIG, cfg["name"],
+    return McpPlan(env=_env_for(servers),
+                   note="%s <- %s (node-global%s)" % (_AGY_CONFIG, ", ".join(wanted),
                                                       ", literal key" if literal else ""))
 
 
@@ -320,16 +430,16 @@ def prepare(hand: str, workspace_dir: str) -> McpPlan:
     task that cannot reach the MCP must still run on the old path, which is
     still delivering its files.
     """
-    cfg = settings()
-    if not cfg:
-        return McpPlan()
-    if hand not in cfg["hands"]:
-        return McpPlan(note=f"{hand} not in AI_INSTITUTE_MCP_HANDS")
+    servers = servers_for(hand)
+    if not servers:
+        if not settings() and not gateway_settings():
+            return McpPlan()                      # feature off entirely
+        return McpPlan(note=f"{hand} is in no server's configured hand set")
     writer = _WRITERS.get(hand)
     if not writer:
         return McpPlan(note=f"{hand} has no per-task MCP surface yet (stage 2)")
     try:
-        plan = writer(cfg, workspace_dir)
+        plan = writer(servers, workspace_dir)
     except Exception as e:
         _logger.warning("MCP setup failed for %s: %s — falling back to the R2 path", hand, e)
         return McpPlan(note=f"setup failed: {e}")

@@ -118,9 +118,8 @@ VERIFIED, FAILED, NOT_APPLICABLE = 0, 1, 2
 # whole workstream is about, and because it returns a real result for an
 # unknown session (files: [], source: archive) rather than an error -- so a
 # non-200 in the log is auth or transport, never "no such session".
-PROMPT = ('Call the ai-institute MCP tool sessions_get_files with '
-          'session_id "verify-probe" and print its raw result. '
-          'Call the tool. Do not read any local file and do not answer from memory.')
+# The prompt is now per-server -- see SERVERS and prompt_for(). It must still
+# name ONE tool and ONE argument, for the reason recorded above.
 
 # HOW EACH HAND IS INVOKED -- AND THE STANDING RISK IN THIS TABLE.
 #
@@ -465,6 +464,42 @@ class NodeGlobalConfig:
             return fh.read() == self.before
 
 
+# WHICH GOVERNED SERVER IS UNDER TEST.
+#
+# Two, because they authenticate differently and that difference decides which
+# hands can reach them. codex can express ONLY Authorization: Bearer; the
+# institute rejects Bearer and the gateway requires it. A gate that only ever
+# tested the institute would keep reporting codex as N/A forever while 73 tools
+# sat reachable.
+#
+# Each entry names its own tool, because the probe prompt has to name ONE tool
+# and ONE argument -- a prompt the model can satisfy without the server is how
+# this gate produced three verdicts about itself.
+SERVERS = {
+    "institute": {
+        "url_var": "AI_INSTITUTE_MCP_URL",
+        "key_vars": ("AI_INSTITUTE_MCP_KEY", "NODE_TOKEN"),
+        "tool": "sessions_get_files",
+        "args": '{"session_id": "verify-probe"}',
+    },
+    "gateway": {
+        "url_var": "ROS_GATEWAY_MCP_URL",
+        "key_vars": ("ROS_GATEWAY_MCP_KEY", "NODE_TOKEN"),
+        # Namespaced by the gateway. rho__ is chosen over institute__ because
+        # rho's channel is quiet, so a probe call is separable in its records.
+        "tool": "rho__rho_projection_meta",
+        "args": "{}",
+    },
+}
+
+
+def prompt_for(server: str) -> str:
+    spec = SERVERS[server]
+    return ('Call the MCP tool %s with arguments %s and print its raw result. '
+            'Call the tool. Do not read any local file and do not answer from memory.'
+            % (spec["tool"], spec["args"]))
+
+
 TOOLS_LIST = '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 
 
@@ -500,7 +535,7 @@ def _control(probe_url: str, workspace: str, auth: str) -> str:
         os.remove(cfg)
 
 
-def verify(hand: str, timeout: int, live: bool) -> int:
+def verify(hand: str, timeout: int, live: bool, server: str = "institute") -> int:
     # THIRD TIME THIS SHAPE HAS COST SOMETHING HERE, so it is a refusal now.
     #
     # STAGE1.md already records it: claude keeps its OAuth credential in the
@@ -526,15 +561,17 @@ def verify(hand: str, timeout: int, live: bool) -> int:
               "verify cannot fail and would report a false pass" % hand)
         return FAILED
 
-    upstream = (os.getenv("AI_INSTITUTE_MCP_URL") or "").strip()
-    key = (os.getenv("AI_INSTITUTE_MCP_KEY") or os.getenv("NODE_TOKEN") or "").strip()
+    spec = SERVERS[server]
+    upstream = (os.getenv(spec["url_var"]) or "").strip()
+    key = next((os.getenv(v) for v in spec["key_vars"] if (os.getenv(v) or "").strip()), "")
+    key = (key or "").strip()
     if live and not (upstream and key):
         where = ("%s (%d vars read)" % (ENV_PATH, ENV_VARS) if ENV_VARS >= 0
                  else "%s -- WHICH DOES NOT EXIST" % ENV_PATH)
-        print("  %-9s REFUSED  --live needs the node's real endpoint and credential; "
+        print("  %-9s REFUSED  --live needs the real endpoint and credential for %r; "
               "%s is unset after reading %s"
-              % (hand, "AI_INSTITUTE_MCP_URL" if not upstream else
-                 "AI_INSTITUTE_MCP_KEY (and NODE_TOKEN)", where))
+              % (hand, server, spec["url_var"] if not upstream else
+                 " or ".join(spec["key_vars"]), where))
         return FAILED
 
     if live:
@@ -561,25 +598,27 @@ def verify(hand: str, timeout: int, live: bool) -> int:
     # this script was launched from, finds none, and runs with no MCP server at
     # all. That is precisely the dispatch-path defect this gate exists to
     # detect, and the gate was manufacturing it.
-    overrides = {"AI_INSTITUTE_MCP_URL": probe_url}
+    overrides = {spec["url_var"]: probe_url}
     if not live:
-        overrides["AI_INSTITUTE_MCP_KEY"] = "nk_verify_probe"
+        overrides[spec["key_vars"][0]] = "nk_verify_probe"
     elif key:
-        overrides["AI_INSTITUTE_MCP_KEY"] = key
+        overrides[spec["key_vars"][0]] = key
 
     # Build the plan through the SAME code path a dispatch uses. If mcp_config
     # declines this hand, that is a real answer, not an error.
-    before = os.environ.get("AI_INSTITUTE_MCP_URL")
-    os.environ["AI_INSTITUTE_MCP_URL"] = probe_url
+    before = os.environ.get(spec["url_var"])
+    # Point ONLY the server under test at the probe. The other stays real, so a
+    # hand configured for both is exercised exactly as it would be dispatched.
+    os.environ[spec["url_var"]] = probe_url
     if not live:
-        os.environ.setdefault("AI_INSTITUTE_MCP_KEY", "nk_verify_probe")
+        os.environ.setdefault(spec["key_vars"][0], "nk_verify_probe")
     try:
         plan = mcp_config.prepare(hand, workspace)
     finally:
         if before is None:
-            os.environ.pop("AI_INSTITUTE_MCP_URL", None)
+            os.environ.pop(spec["url_var"], None)
         else:
-            os.environ["AI_INSTITUTE_MCP_URL"] = before
+            os.environ[spec["url_var"]] = before
 
     if not plan and not plan.note.startswith("~/"):
         print("  %-9s N/A      %s" % (hand, plan.note or "not configurable on this node"))
@@ -596,8 +635,11 @@ def verify(hand: str, timeout: int, live: bool) -> int:
     # node's credential works, so a later 401 from the hand is the HAND's.
     auth = ""
     if live:
-        scheme = os.getenv("AI_INSTITUTE_MCP_SCHEME") or ""
-        auth = "%s: %s%s" % (mcp_config._resolve_header(), scheme, key)
+        if server == "gateway":
+            auth = "Authorization: Bearer %s" % key
+        else:
+            scheme = os.getenv("AI_INSTITUTE_MCP_SCHEME") or ""
+            auth = "%s: %s%s" % (mcp_config._resolve_header(), scheme, key)
     code = _control(probe_url, workspace, auth)
     if code != "200" or not recorder:
         print("  %-9s REFUSED  positive control did not fire: curl to %s returned %r "
@@ -610,7 +652,7 @@ def verify(hand: str, timeout: int, live: bool) -> int:
 
     others = other_servers(hand)
     cmd = resolve_cli_path(HAND_BIN[hand])
-    argv = HAND_CMD[hand](cmd, plan.args, PROMPT, workspace)
+    argv = HAND_CMD[hand](cmd, plan.args, prompt_for(server), workspace)
     spawn_env = get_cli_env(workspace)
     spawn_env.update(overrides)
     spawn_env.update(plan.env)
@@ -730,6 +772,9 @@ def main() -> int:
     ap.add_argument("--live", action="store_true",
                     help="proxy to the REAL institute and judge on what it answers "
                          "(the only mode whose FAILED verdicts are trustworthy)")
+    ap.add_argument("--server", choices=sorted(SERVERS), default="institute",
+                    help="which governed server to certify against; 'gateway' is "
+                         "the only one codex can authenticate to")
     ap.add_argument("--timeout", type=int, default=180)
     a = ap.parse_args()
     if not a.hand and not a.all:
@@ -753,12 +798,13 @@ def main() -> int:
                       "verify. That is N/A, not a failure.")
                 return NOT_APPLICABLE
     print("  probe binds a LAN address, never loopback")
-    print("  mode: %s" % ("LIVE -- recording proxy to the real institute" if a.live
+    print("  server: %s" % a.server)
+    print("  mode: %s" % ("LIVE -- recording proxy to the real endpoint" if a.live
                           else "trap -- transport only, verdicts are not auth verdicts"))
     worst = VERIFIED
     for h in hands:
         Trap.hits = []
-        rc = verify(h, a.timeout, a.live)
+        rc = verify(h, a.timeout, a.live, a.server)
         if rc == FAILED:
             worst = FAILED
         elif rc == NOT_APPLICABLE and worst == VERIFIED:
