@@ -207,6 +207,73 @@ def servers_for(hand: str) -> list:
     return out
 
 
+def preflight(hand: str, timeout: float = 6.0) -> dict:
+    """Which governed servers actually answer, right now, before the hand runs.
+
+    WHY A NODE SHOULD DO THIS AT ALL.
+
+    Measured 2026-09-21: a hand fabricates a complete, correct-looking tool
+    result under exactly one condition -- a tool that is SILENTLY ABSENT plus a
+    prompt that describes the expected shape. Either alone is safe. And a tool
+    description necessarily describes a shape, so the removable half is the
+    silence.
+
+    The federation was manufacturing that cell in production the same day: one
+    namespace was unreachable all day, its tools were omitted from the listing
+    without comment, and every hand saw a smaller surface with nothing saying
+    so. This node does the same thing -- it writes a config and never checks
+    the server came up.
+
+    Uses tools/list, which needs no auth on these endpoints. That makes it a
+    REACHABILITY probe and NOT an authorisation one, and this function says so
+    in its own result rather than in a comment, because a caller that reads
+    `reachable` as `usable` is the next defect.
+    """
+    import urllib.request
+    import urllib.error
+
+    out = {"checked": [], "reachable": [], "unreachable": [],
+           "proves": "reachability only — tools/list needs no auth here, so a "
+                     "reachable server may still refuse every tools/call"}
+    body = json.dumps({"jsonrpc": "2.0", "id": 1,
+                       "method": "tools/list", "params": {}}).encode()
+    for cfg in servers_for(hand):
+        out["checked"].append(cfg["name"])
+        req = urllib.request.Request(cfg["url"], data=body, method="POST", headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+            cfg["header"]: cfg["scheme"] + cfg["key"]})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                ok = r.status == 200
+                r.read(1)
+        except Exception as e:
+            ok, err = False, "%s: %s" % (type(e).__name__, e)
+        if ok:
+            out["reachable"].append(cfg["name"])
+        else:
+            out["unreachable"].append({"name": cfg["name"], "why": err[:120]})
+    return out
+
+
+def reachability_notice(pre: dict) -> str:
+    """The line a hand should be told when a governed server did not come up.
+
+    Empty when everything answered -- a notice on every task is a notice nobody
+    reads. When something is down it is STATED, because the alternative is the
+    silence half of the fabrication conjunction.
+    """
+    if not pre.get("unreachable"):
+        return ""
+    names = ", ".join(u["name"] for u in pre["unreachable"])
+    return ("MCP SERVERS UNAVAILABLE FOR THIS TASK: %s. Tools from %s are NOT in "
+            "your toolset right now. This is a statement of fact, not a listing "
+            "gap: if a task needs them, say so in your output rather than "
+            "reconstructing what they would have returned."
+            % (names, "it" if len(pre["unreachable"]) == 1 else "them"))
+
+
 def _mcp_dir() -> str:
     """Per-task CLI config lives beside the node's data, never inside the
     workspace — the workspace is uploaded to R2 after every task."""
