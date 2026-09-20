@@ -49,6 +49,7 @@ non-loopback address can be found, this REFUSES (exit 1) rather than falling
 back to 127.0.0.1 and reporting success.
 """
 import argparse
+import datetime
 import http.server
 import json
 import os
@@ -228,6 +229,10 @@ class Trap(http.server.BaseHTTPRequestHandler):
         pass                                  # the caller reports, not the server
 
 
+def utc_now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def make_proxy(upstream: str):
     """A recording proxy in front of the REAL institute, not a fake server.
 
@@ -317,7 +322,7 @@ def make_proxy(upstream: str):
             Proxy.calls.append({"method": name if method == "POST"
                                 else "%s(stream)" % method,
                                 "code": code, "authed": authed,
-                                "unexpanded": unexpanded})
+                                "unexpanded": unexpanded, "at": utc_now()})
             self.send_response(code)
             for k, v in hdrs.items():
                 if k.lower() not in DROP_RES:
@@ -716,6 +721,25 @@ def verify(hand: str, timeout: int, live: bool, server: str = "institute") -> in
             return FAILED
 
     dt = time.time() - t0
+
+    # DECLARE THE WINDOW. A certification run is production traffic against a
+    # shared, counted channel -- the gateway attributes every forwarded call to
+    # this node, and another estate may be measuring that counter right now.
+    #
+    # Measured cost of not doing this, 2026-09-20: two codex certification runs
+    # authorised by OP-017 landed real tools/call requests on rho's namespace
+    # minutes after a marker was placed there, moved edge-node:gubei12's
+    # last_seen past the marker window, and made a pre-registered verification
+    # unreadable. Both asks were on this estate's desk in the same tick.
+    #
+    # So the gate now says what it did and when, in the same form a marker
+    # declares, and the reader need not ask.
+    stamped = [c for c in recorder[control_n:] if isinstance(c, dict) and c.get("at")]
+    if live and stamped:
+        print("  %-9s          declared window: %s .. %s UTC — %d forwarded call(s) "
+              "attributed to THIS node at the endpoint"
+              % ("", stamped[0]["at"], stamped[-1]["at"], len(stamped)))
+
     for o in others:
         print("  %-9s          ⚠ also reachable during this run: %s -> %s%s"
               % ("", o["name"], str(o["target"])[:60],
