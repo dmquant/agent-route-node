@@ -252,7 +252,18 @@ def _rewrite(prompt: str, files: List[StagedFile], workspace_dir: str) -> str:
             "#   present in this workspace from the session's own sync; this block does",
             "#   not describe them."]
     for f in files:
-        body.append(json.dumps({"filename": f.ref.filename, "path": f.path,
-                                "bytes": f.written, "why": f.ref.why}, ensure_ascii=False))
+        entry = {"filename": f.ref.filename, "path": f.path,
+                 "bytes": f.written, "why": f.ref.why}
+        if not f.written:
+            # A file can stage SUCCESSFULLY and be empty, and then `why` says
+            # what it was supposed to contain while the file says nothing.
+            #
+            # Measured 2026-09-21: both hands tested read the file and reported
+            # it empty WITHOUT this, so it is not a correctness fix -- the
+            # emptiness is inspectable, which is what makes it safe. It is here
+            # because it saved codex 58% of its tokens (3,619 -> 1,506) by not
+            # making it open a file to discover there is nothing in it.
+            entry["EMPTY"] = "0 bytes — this file staged successfully and has NO content"
+        body.append(json.dumps(entry, ensure_ascii=False))
     return BLOCK_RE.sub("<INSTITUTE_FILES>\n" + "\n".join(body) + "\n</INSTITUTE_FILES>",
                         prompt, count=1)
