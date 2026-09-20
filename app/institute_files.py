@@ -205,10 +205,38 @@ def _rewrite(prompt: str, files: List[StagedFile], workspace_dir: str) -> str:
     to disbelieve than a wall of inlined text, and it says out loud that there is
     nothing to go looking for.
     """
+    # SAY WHAT THE LIST IS EXHAUSTIVE *OF*.
+    #
+    # This block used to read "The list is exhaustive ... Do not search the
+    # filesystem for anything else." Both halves were defects of the same kind:
+    #
+    #   "exhaustive"     is true of what this task REQUESTED and reads as true
+    #                    of what the session HOLDS. A model given four files out
+    #                    of a thirty-file session was told the list was
+    #                    exhaustive, and it was -- at a scope the model had no
+    #                    way to see.
+    #   "do not search"  forbade the reader from checking the claim. A summary
+    #                    whose purpose is to suppress verification has to be
+    #                    right every time, and staging can fail.
+    #
+    # The anti-hallucination force is kept, because it is measured and it works
+    # -- an invented "[...]" appeared 40 times across 11 of one session's 52
+    # reasoning blocks. What changes is that the completeness claim is now
+    # scoped to the thing it is actually true of, and the reader is given
+    # somewhere to put a gap instead of being told there cannot be one.
+    n = len(files)
     body = ["# Staged by the node before this task started. Each file below was fetched",
-            "# from the institute and verified present. The list is exhaustive and the",
-            "# contents are COMPLETE -- nothing here is truncated or elided. Read them",
-            "# from these paths. Do not search the filesystem for anything else."]
+            "# from the institute and verified present.",
+            "#",
+            "# SCOPE: %d file(s) were named by this task and %d are staged below." % (n, n),
+            "#   This is exhaustive of what THIS TASK REQUESTED. It is NOT a listing of",
+            "#   everything the session contains.",
+            "#",
+            "# CONTENTS: each file below is complete -- nothing is truncated or elided,",
+            "#   so a short file is short, not cut off.",
+            "#",
+            "# If you need a file that is NOT listed here, say so in your output. It was",
+            "# not requested, and searching the filesystem will not produce it."]
     for f in files:
         body.append(json.dumps({"filename": f.ref.filename, "path": f.path,
                                 "bytes": f.written, "why": f.ref.why}, ensure_ascii=False))
