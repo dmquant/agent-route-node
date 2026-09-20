@@ -714,6 +714,9 @@ def verify(hand: str, timeout: int, live: bool, server: str = "institute") -> in
 
     guard = NodeGlobalConfig(hand)
     guard.__enter__()
+    # This gate HOLDS the snapshot/restore guard, so it is the one caller
+    # entitled to point a node-global registry at a LAN probe.
+    os.environ["AI_INSTITUTE_MCP_ALLOW_LAN"] = "1"
     workspace = tempfile.mkdtemp(prefix="verify-%s-" % hand)
     # ONLY the settings under test. Deliberately not dict(os.environ).
     #

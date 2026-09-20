@@ -44,6 +44,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
+from urllib.parse import urlparse
+
 from app.config import get_data_dir
 
 _logger = logging.getLogger("mcp_config")
@@ -359,6 +361,33 @@ def _prepare_agy(servers: list, workspace_dir: str) -> McpPlan:
     back 401, set AI_INSTITUTE_MCP_AGY_LITERAL=1 to write the token itself
     instead, still at 0600.
     """
+    # REFUSE TO WRITE A PRIVATE ADDRESS INTO A NODE-GLOBAL FILE.
+    #
+    # agy's registry is the only configuration this module writes that OUTLIVES
+    # the task, so a test URL landing in it is a production break rather than a
+    # stale temp file. That happened TWICE on 2026-09-20/21, both times because
+    # an ad-hoc script called prepare() outside the verify gate's
+    # NodeGlobalConfig guard: once leaving a ${VAR} the hand cannot expand, once
+    # leaving a proxy port that no longer existed. Each time the node looked
+    # configured and reached nothing.
+    #
+    # Documenting it did not stop the second one, so it is a refusal now. The
+    # gate sets AI_INSTITUTE_MCP_ALLOW_LAN because it holds the guard that puts
+    # the file back; anything else gets a message naming both the reason and the
+    # way through, rather than a silent success.
+    if not (os.getenv("AI_INSTITUTE_MCP_ALLOW_LAN") or "").strip():
+        for cfg in servers:
+            host = urlparse(cfg["url"]).hostname or ""
+            if host in ("localhost",) or host.startswith(("127.", "10.", "192.168.")) \
+                    or (host.startswith("172.") and host.split(".")[1:2]
+                        and 16 <= int(host.split(".")[1] or 0) <= 31):
+                return McpPlan(note=(
+                    "refusing to write %s -> %s into the NODE-GLOBAL agy registry: "
+                    "a private address here outlives the task and has twice left this "
+                    "node pointing at something that no longer exists. Set "
+                    "AI_INSTITUTE_MCP_ALLOW_LAN=1 if you hold a snapshot/restore guard."
+                    % (cfg["name"], cfg["url"])))
+
     path = os.path.expanduser(_AGY_CONFIG)
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     doc = _load_json_or_empty(path)
