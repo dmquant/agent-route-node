@@ -847,7 +847,7 @@ def verify(hand: str, timeout: int, live: bool, server: str = "institute") -> in
     if live and stamped:
         print("  %-9s          declared window: %s .. %s UTC — %d forwarded call(s) "
               "attributed to THIS node at the endpoint"
-              % ("", stamped[0]["at"], stamped[-1]["at"], len(stamped)))
+              % (hand, stamped[0]["at"], stamped[-1]["at"], len(stamped)))
 
     # The OTHER servers the hand loaded. Observed, not judged -- but counted,
     # because an accounting that silently omits them reads as complete and is
@@ -858,19 +858,30 @@ def verify(hand: str, timeout: int, live: bool, server: str = "institute") -> in
             if name == tested or not calls:
                 continue
             times = [c["at"] for c in calls if c.get("at")]
-            print("  %-9s          also observed: %d call(s) to %s%s — the hand loaded it "
-                  "at startup; proxied and counted, not judged"
-                  % ("", len(calls), name,
-                     (" (%s .. %s UTC)" % (times[0], times[-1])) if times else ""))
+            # NAME THE METHODS, not just the count.
+            #
+            # A bare count cannot distinguish a hand connecting (initialize,
+            # tools/list) from a hand WORKING (tools/call) on a server this
+            # gate did not configure for it. On 2026-09-21 a codex run showed
+            # 16 calls to a server codex declines, and the count alone left
+            # that unexplained for hours.
+            methods = {}
+            for c in calls:
+                methods[c["method"]] = methods.get(c["method"], 0) + 1
+            print("  %-9s          also observed: %d call(s) to %s%s — %s. Proxied and "
+                  "counted, NOT judged."
+                  % (hand, len(calls), name,
+                     (" (%s .. %s UTC)" % (times[0], times[-1])) if times else "",
+                     ", ".join("%s x%d" % (m, n) for m, n in sorted(methods.items()))))
 
     for o in others:
         print("  %-9s          ⚠ also reachable during this run: %s -> %s%s"
-              % ("", o["name"], str(o["target"])[:60],
+              % (hand, o["name"], str(o["target"])[:60],
                  "  [literal credential on disk]" if o["literal_credential"] else ""))
     if others:
         print("  %-9s          a verdict below describes the server THIS gate "
               "configured. The hand could satisfy the task through one of the above "
-              "without touching it." % "")
+              "without touching it." % hand)
     mine = recorder[control_n:]               # the control's own hit is not the hand's
     if not mine:
         # Show what the hand said. "It did not dial" is a symptom; the hand
@@ -938,7 +949,7 @@ def verify(hand: str, timeout: int, live: bool, server: str = "institute") -> in
             print("  %-9s ⚠ THE HAND SENT ITS ENV REFERENCE UNEXPANDED. The credential "
                   "arrived as the literal string \"${...}\", so every 401 below is "
                   "this hand being unable to expand a reference in that position — "
-                  "NOT a wrong or missing key." % "")
+                  "NOT a wrong or missing key." % hand)
         print("  %-9s FAILED   connected and listed, but no tools/call was SERVED in "
               "%.1fs (%d call(s): %s). tools/list needs no auth here, so nothing in "
               "this run exercised the credential. %s"
