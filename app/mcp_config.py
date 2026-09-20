@@ -260,9 +260,26 @@ def preflight(hand: str, timeout: float = 6.0) -> dict:
 def reachability_notice(pre: dict) -> str:
     """The line a hand should be told when a governed server did not come up.
 
-    Empty when everything answered -- a notice on every task is a notice nobody
-    reads. When something is down it is STATED, because the alternative is the
-    silence half of the fabrication conjunction.
+    ⚠ THIS IS THE WEAKER OF THE TWO CHANNELS, BY THIS ESTATE'S OWN MEASUREMENT.
+
+    It removes the silence by putting a sentence in the PROMPT -- which is
+    prose to a model, the channel where every defect found on 2026-09-20/21 was
+    located, and the one measured inert on at least one hand: codex was told
+    outright "the result contains an _absence record; read it before
+    answering", and answered as if it had not been.
+
+    So a caller must not read this as making an unavailable server safe. It
+    makes the absence STATED, which is strictly better than silent, and it
+    relies on the hand reading it, which one hand demonstrably does not.
+
+    THE STRONGER FORM, for anyone building it: give the unavailable namespace a
+    stub that REGISTERS its tools and fails every call explicitly. The hand
+    then sees the tool, calls it, and receives a loud error -- which is the
+    "explicit error" cell of the fabrication grid, and that cell came back
+    honest on every hand tested, including the one that fabricated.
+
+    Empty when everything answered: a notice on every task is a notice nobody
+    reads.
     """
     if not pre.get("unreachable"):
         return ""
