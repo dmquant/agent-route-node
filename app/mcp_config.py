@@ -287,8 +287,18 @@ def remove_agy_entry() -> str:
     if not os.path.exists(path):
         return "no agy registry"
     name = (os.getenv("AI_INSTITUTE_MCP_NAME") or "ai-institute").strip()
-    with open(path, encoding="utf-8") as fh:
-        doc = json.load(fh) or {}
+    # Same tolerance as the install path, and for the same measured file.
+    #
+    # _load_json_or_empty exists because a zero-byte registry is real -- gubei12
+    # has carried one since May, studio01 since 2026-09-15 -- and a bare
+    # json.load raises on it. The INSTALL path was hardened and this one was
+    # not, so the asymmetry was: turning the feature on tolerated the file and
+    # turning it OFF raised. That is the wrong way round. This is the
+    # revocation path, and a revocation that throws leaves the entry in place
+    # while reading as an error someone may retry, ignore, or misdiagnose.
+    doc = _load_json_or_empty(path)
+    if doc is None:
+        return f"agy registry at {_AGY_CONFIG} is malformed; refusing to rewrite it"
     if name not in (doc.get("mcpServers") or {}):
         return f"{name} not in agy registry"
     del doc["mcpServers"][name]
