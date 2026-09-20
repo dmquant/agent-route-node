@@ -291,6 +291,15 @@ def make_proxy(upstream: str):
             fwd["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
             authed = any(k.lower() in ("authorization", "x-admin-token")
                          for k in fwd)
+            # Did the HAND expand its ${VAR} reference, or send it literally?
+            #
+            # A credential that arrives as the STRING "${ROS_GATEWAY_MCP_KEY}"
+            # is a 401 that looks exactly like a wrong key, and the difference
+            # decides whether an env reference is usable on this hand at all.
+            # Reported as a boolean about the shape -- never the value.
+            unexpanded = any(("${" in v or "{env:" in v)
+                             for k, v in fwd.items()
+                             if k.lower() in ("authorization", "x-admin-token"))
 
             req = urllib.request.Request(upstream, data=raw, method=method,
                                          headers=fwd)
@@ -307,7 +316,8 @@ def make_proxy(upstream: str):
 
             Proxy.calls.append({"method": name if method == "POST"
                                 else "%s(stream)" % method,
-                                "code": code, "authed": authed})
+                                "code": code, "authed": authed,
+                                "unexpanded": unexpanded})
             self.send_response(code)
             for k, v in hdrs.items():
                 if k.lower() not in DROP_RES:
@@ -481,6 +491,8 @@ SERVERS = {
         "key_vars": ("AI_INSTITUTE_MCP_KEY", "NODE_TOKEN"),
         "tool": "sessions_get_files",
         "args": '{"session_id": "verify-probe"}',
+        "name_var": "AI_INSTITUTE_MCP_NAME",
+        "default_name": "ai-institute",
     },
     "gateway": {
         "url_var": "ROS_GATEWAY_MCP_URL",
@@ -489,15 +501,31 @@ SERVERS = {
         # rho's channel is quiet, so a probe call is separable in its records.
         "tool": "rho__rho_projection_meta",
         "args": "{}",
+        "name_var": "ROS_GATEWAY_MCP_NAME",
+        "default_name": "ros-gateway",
     },
 }
 
 
 def prompt_for(server: str) -> str:
+    """Name the SERVER as well as the tool.
+
+    agy does not call a tool by name -- it calls call_mcp_tool(ServerName,
+    ToolName, Arguments). Given only `rho__rho_projection_meta` it SPLIT the
+    namespaced name and guessed ServerName "rho", which does not exist, and
+    returned `invalid tool call`. The gate scored that as the hand declining
+    to call, when the hand had tried and been handed an under-specified target.
+
+    So the prompt names both. It costs the other hands nothing -- they address
+    tools by the flat namespaced name and ignore the extra fact.
+    """
     spec = SERVERS[server]
-    return ('Call the MCP tool %s with arguments %s and print its raw result. '
-            'Call the tool. Do not read any local file and do not answer from memory.'
-            % (spec["tool"], spec["args"]))
+    name = (os.getenv(spec["name_var"]) or spec["default_name"]).strip()
+    return ('Call the tool %s on the MCP server named %s, with arguments %s, '
+            'and print its raw result. The server name is exactly "%s" — do not '
+            'infer it from the tool name. Call the tool. Do not read any local '
+            'file and do not answer from memory.'
+            % (spec["tool"], name, spec["args"], name))
 
 
 TOOLS_LIST = '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
@@ -752,6 +780,11 @@ def verify(hand: str, timeout: int, live: bool, server: str = "institute") -> in
             why = ("The hand FINISHED in %.1fs without calling: it connected, listed, "
                    "and declined. The config is fine; look at the model or the tool "
                    "name this harness exposes." % dt)
+        if any(c.get("unexpanded") for c in mine):
+            print("  %-9s ⚠ THE HAND SENT ITS ENV REFERENCE UNEXPANDED. The credential "
+                  "arrived as the literal string \"${...}\", so every 401 below is "
+                  "this hand being unable to expand a reference in that position — "
+                  "NOT a wrong or missing key." % "")
         print("  %-9s FAILED   connected and listed, but no tools/call was SERVED in "
               "%.1fs (%d call(s): %s). tools/list needs no auth here, so nothing in "
               "this run exercised the credential. %s"

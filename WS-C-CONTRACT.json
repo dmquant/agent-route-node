@@ -1,9 +1,9 @@
 {
   "contract": "ws-c/hand-mcp",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "owner": "local-fabric",
   "phase": 2,
-  "measured_at": "2026-09-20T12:10:00+08:00",
+  "measured_at": "2026-09-20T20:50:00+08:00",
   "measured_from": "Studio02 and gubei12, live endpoint, through the real dispatch path",
   "_note": "Every field below is measured on a real node or read from the harness source. Nothing here is inferred from a vendor doc. Where a value is a limitation rather than a choice, `why` says what was measured.",
   "authority": {
@@ -89,12 +89,20 @@
     }
   ],
   "governed_coverage": {
-    "configurable": 3,
+    "configurable": 4,
     "total": 4,
-    "excluded": [
-      "codex"
+    "excluded": [],
+    "_changed": "3 of 4 -> 4 of 4 on 2026-09-20",
+    "_how": "codex was excluded because its only auth form is Authorization: Bearer and the institute rejects Bearer. ros-gateway REQUIRES Bearer -- measured four arms, one variable apart, on tools/call. The hand that could not reach the institute is the hand the gateway is reachable by.",
+    "certified_by_a_served_tools_call": [
+      "opencode -> institute (Studio02)",
+      "codex -> ros-gateway (gubei12)"
     ],
-    "_warning": "This counts GOVERNED configuration, not access. codex on SG already carries federation MCP servers inherited from the operator's personal ~/.codex/config.toml. Actual access is higher than 3 and unattributed. Quoting only the governed number understates the problem this workstream exists to fix."
+    "not_certified": [
+      "claude -> either (REFUSED over ssh: its keychain credential is unreadable from an ssh-descended process; must run under the launchd GUI-domain agent)",
+      "agy -> either (cannot expand an env reference; would need the literal form to be tested)"
+    ],
+    "_warning": "This still counts GOVERNED configuration, not access. Ungoverned routes to the same estate exist on these nodes and the install gate now enumerates them with every verdict."
   },
   "needs_the_surface_must_serve": {
     "_principle": "A mandate does not create a path. A safe path with no entrance gets routed around, and the routing looks like competence. Enumerate the NEEDS, not only the protocol.",
@@ -153,7 +161,9 @@
   },
   "provisioning_rules": [
     "Set AI_INSTITUTE_MCP_HEADER explicitly. Do not inherit the module default, even though the default is now correct -- an unset variable is a silent failure with no error surface.",
-    "Never write the credential LITERAL into a config file. OP-003 permits injecting it into governed harness config; every configurable harness expands an env reference instead, so the governed file carries the variable NAME and the spawn carries its value. Verified live on opencode ({env:VAR}) and agy (${VAR}), not assumed. This satisfies the delivery rule strictly rather than minimally.",
+    "Never write the credential LITERAL into a config file -- EXCEPT for agy, which does not expand env references in headers (see credential_expansion). For agy the literal is required, and the mitigation is the file mode: 0600, node-global, written idempotently.",
+    "For every hand that DOES expand a reference, the governed file carries the variable NAME and the spawn carries its value. Proven by a served tools/call on opencode and codex; claude is unproven and should not be assumed.",
+    "An agy literal is a per-machine value in a node-global file that has been observed copied between hosts. That is how sg01 and gubei12 came to present each other's identity on 2026-09-20. Treat any agy registry copy as a credential transposition risk and re-check by hash after one.",
     "Run the install gate before writing any harness config."
   ],
   "measured_under_dispatch": {
@@ -185,5 +195,38 @@
       }
     ],
     "_prompt_matters": "Two prompts produced FAILED verdicts that were about the prompt. 'Answer X' was answerable from the model's own head; 'list the available tools' sent opencode reading ~/.config/opencode/*.json until it hit a permission wall and exited in 5s having never dialled. A verify prompt must name ONE tool and ONE argument."
+  },
+  "credential_expansion": {
+    "_why_this_block_exists": "provisioning_rules said the credential must never be a literal, and claimed that was 'Verified live on opencode ({env:VAR}) and agy (${VAR}), not assumed'. The agy half was NOT verified -- it rested on agy listing the tool, and tools/list needs no auth on this endpoint. That is the SECOND time the same unauthenticated read was mistaken for proof in this workstream, and the first one is already annotated in STAGE1.md. A rule that cannot be satisfied is worse than one nobody wrote.",
+    "measured_2026-09-20_by_served_tools_call": [
+      {
+        "hand": "opencode",
+        "form": "{env:VAR}",
+        "expands": true,
+        "evidence": "tools/call SERVED at HTTP 200 on Studio02 with the reference in the config"
+      },
+      {
+        "hand": "codex",
+        "form": "bearer_token_env_var",
+        "expands": true,
+        "evidence": "tools/call SERVED at HTTP 200 on gubei12 through ros-gateway"
+      },
+      {
+        "hand": "agy",
+        "form": "${VAR}",
+        "expands": false,
+        "evidence": "the probe recorded the credential arriving as the literal string '${...}'; control confirms the variable WAS in agy's spawn environment at 67 chars, so this is non-expansion and not an unset variable",
+        "both_positions_fail": "bare ${VAR} in X-Admin-Token AND Bearer ${VAR} in Authorization",
+        "consequence": "AI_INSTITUTE_MCP_AGY_LITERAL IS needed; the earlier claim that it is not is withdrawn"
+      },
+      {
+        "hand": "claude",
+        "form": "${VAR}",
+        "expands": null,
+        "evidence": "UNVERIFIED -- claude has connected and listed under dispatch but has never completed a tools/call on this fleet, and listing proves nothing about the credential"
+      }
+    ],
+    "_the_failure_is_silent": "An unexpanded reference still passes tools/list, so a hand configured this way looks healthy in every listing and 401s only inside the model's tool loop -- the expensive failure this whole workstream was built to prevent.",
+    "_retracted_recommendation": "local-fabric recommended converting the node-global ros-gateway headers from literals to ${AI_INSTITUTE_MCP_KEY}. That would have broken gateway access on both nodes, silently. Withdrawn before it was applied. It also explains why those entries were literals: for agy they have to be."
   }
 }

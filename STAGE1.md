@@ -229,3 +229,56 @@ measured against a probe that could not speak the protocol. In both cases the
 output was well-formed, confident, and about the instrument. **The gate is only
 worth its refusals if a refusal cannot mean "my probe is broken" — hence the
 positive control, and hence `--live` being the only mode that certifies.**
+
+## 🔴 Retraction — "agy expands `${VAR}` in a header" is false, 2026-09-20
+
+The line above reading *"opencode expands `{env:VAR}` and agy expands `${VAR}` in
+a header … `AI_INSTITUTE_MCP_AGY_LITERAL` is not needed"* is **withdrawn for
+agy.** The opencode half stands and is now proven by a served `tools/call`.
+
+**How it was wrong is the same way line 107 was wrong.** The agy half rested on
+agy *listing* the tool — and `tools/list` needs no auth on that endpoint. An
+unexpanded reference passes the listing and fails only inside the model's tool
+loop. **Second instance of the identical error in this one document**, and the
+first is annotated three sections up.
+
+Measured through the recording proxy, which reports the *shape* of the arriving
+credential without ever reading its value:
+
+| hand | form | expands? | evidence |
+|---|---|---|---|
+| opencode | `{env:VAR}` | ✅ yes | `tools/call` **200**, Studio02 |
+| codex | `bearer_token_env_var` | ✅ yes | `tools/call` **200**, gubei12 via ros-gateway |
+| **agy** | `${VAR}` | ❌ **no** | credential arrived as the literal string `${…}` |
+| claude | `${VAR}` | ⚠ unknown | has never completed a `tools/call` on this fleet |
+
+**The control that makes the agy row a finding rather than a guess:** an unset
+variable and a non-expanding hand produce the *identical* symptom. The variable
+was confirmed present in agy's spawn environment at 67 characters while the
+header still arrived as `${…}`. Both positions fail — bare `${VAR}` in
+`X-Admin-Token`, and `Bearer ${VAR}` in `Authorization`.
+
+⚠ **A recommendation was withdrawn before it was applied.** I had advised the
+operator to convert the node-global `ros-gateway` headers from literals to
+`${AI_INSTITUTE_MCP_KEY}`. **That would have broken gateway access on both
+nodes, silently** — listings would have stayed green. It also explains why
+those entries were literals in the first place: for agy, they have to be.
+
+## ✅ codex is no longer excluded — 4 of 4
+
+`codex` **VERIFIED**, `tools/call` served at HTTP 200 through `ros-gateway` on
+gubei12, reproduced twice (17.8s, 16.8s).
+
+The exclusion was never about the hand. `codex` can express exactly one
+credential form, `Authorization: Bearer`; the institute rejects it. Measured
+four arms one variable apart on `tools/call`, **the gateway requires it**:
+
+| arm | result |
+|---|---|
+| `Authorization: Bearer` only | **200** |
+| `X-Institute-Token` only | 401 — `"no bearer token"` |
+| no auth | 401 |
+
+So `X-Institute-Token` was inert — a second literal copy of the credential on
+disk buying no access, since removed from both nodes and independently
+re-verified as gone.
