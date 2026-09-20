@@ -104,13 +104,27 @@ exercised because there was no endpoint. ai-institute answered (`44fec001`), and
 the gate cleared:
 
 - **Endpoint**: `POST https://ai-institute-worker.dmquant.workers.dev/api/mcp`, JSON-RPC 2.0 over HTTP, stateless. 48 tools.
-- **Auth**: the node's own `NODE_TOKEN` **is** an institute `nk_` token. Tested, not assumed. All three header forms return 200 — `X-Admin-Token`, `X-API-Key` and `Authorization: Bearer` — so the default config covers codex too, which can only send Bearer.
+- **Auth**: the node's own `NODE_TOKEN` **is** an institute `nk_` token. `tools/call` authenticates **only** as `X-Admin-Token`.
+
+  > ⚠ **This line previously read "all three header forms return 200 — so the default config covers codex too." That was wrong and is retracted.** It was measured against `tools/list`, which requires no auth at all, so a 200 there proved nothing. The error is the scar behind `mcp_config.DEFAULT_HEADER` and behind `_prepare_codex` refusing rather than configuring.
+
+  Re-measured 2026-09-20 03:00 from Studio02, three arms against the live endpoint, one variable apart:
+
+  | arm | result |
+  |---|---|
+  | no auth | HTTP 401, `category: auth` |
+  | `Authorization: Bearer` | **HTTP 401, `category: auth`** — indistinguishable from sending nothing |
+  | `X-Admin-Token` | **HTTP 200**, real result (`files: []`, `source: archive`) |
+
+  **Consequence: `codex` cannot be configured.** Its only auth mechanism for a streamable-HTTP MCP server is `bearer_token_env_var`, and Bearer does not authenticate. Governed harness coverage is **3 of 4**, not 4.
+
+  The first run of this re-measurement returned 403 `error code: 1010` on *all three* arms and would have read as "auth fails everywhere" — that was Cloudflare rejecting `Python-urllib`'s User-Agent. **Send a normal `User-Agent` or the test measures the WAF, not the auth.**
 - **Tools verified live**: `sessions_get_files` returns a real file list; `sessions_workspace_read` returns content; the absence path returns `content: null` with an explicit status.
 
 Enabled on Studio02 and gubei12 (`AI_INSTITUTE_MCP_URL` in the data-dir `.env`).
 The R2 pre-stage is untouched and still running.
 
-**All four hands see the server, live, each exit 0:**
+**All four hands saw the server listed, live, each exit 0** — but *seeing* is not *calling*, and the difference is the whole error above:
 
 | hand | node | saw |
 |---|---|---|
@@ -118,6 +132,13 @@ The R2 pre-stage is untouched and still running.
 | agy | gubei12 | `sessions_workspace_read` |
 | codex | gubei12 | `mcp__ai_institute__sessions_workspace_read` |
 | claude | gubei12 | see run log |
+
+⚠ **This table records `tools/list`, which requires no auth.** Every row here is
+compatible with that hand being unable to call a single tool. The `codex` row in
+particular: it listed the tool and could never have invoked it, because Bearer
+does not authenticate `tools/call`. Under `DEFAULT_HEADER = X-Admin-Token` codex
+is no longer configured at all, so it now sees nothing — which is the honest
+state rather than a regression.
 
 The two things that could only be verified with a live endpoint both hold: opencode
 expands `{env:VAR}` and agy expands `${VAR}` in a header. The registry on gubei12

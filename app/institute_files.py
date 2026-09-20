@@ -34,6 +34,8 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from app import mcp_config
+
 _logger = logging.getLogger("institute_files")
 
 BLOCK_RE = re.compile(r"<INSTITUTE_FILES>(.*?)</INSTITUTE_FILES>", re.S)
@@ -92,11 +94,12 @@ def settings() -> Optional[dict]:
     key = (os.getenv("AI_INSTITUTE_MCP_KEY") or os.getenv("NODE_TOKEN") or "").strip()
     if not key:
         return None
-    # Measured 2026-09-11: an nk_ node token authenticates ONLY as X-Admin-Token.
-    # X-API-Key and Authorization: Bearer both return 401 on tools/call. tools/list
-    # needs no auth at all, so do not read a 200 there as proof of anything.
+    # The default lives in mcp_config.DEFAULT_HEADER, where the measurement behind
+    # it is recorded. Imported rather than repeated: these two modules read the same
+    # env var and once held different defaults, which is how a node ended up with
+    # Bearer-configured hands and a correctly-authenticating fetch path at once.
     return {"url": url, "key": key,
-            "header": (os.getenv("AI_INSTITUTE_MCP_HEADER") or "X-Admin-Token").strip(),
+            "header": mcp_config._resolve_header(),
             "scheme": os.getenv("AI_INSTITUTE_MCP_SCHEME") or ""}
 
 

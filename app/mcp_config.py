@@ -53,6 +53,51 @@ _logger = logging.getLogger("mcp_config")
 # NAME of the variable and the spawn carries its value.
 _KEY_VAR = "AI_INSTITUTE_MCP_KEY"
 
+# THE header default, for every module that reads AI_INSTITUTE_MCP_HEADER.
+#
+# It lives here alone because it did not, and the drift shipped. This module
+# defaulted to "Authorization" while institute_files defaulted the SAME variable
+# to "X-Admin-Token", so a node that set the URL without setting the header got
+# hands configured with Bearer -- 401 inside the model's tool loop -- while the
+# file-fetch path on that same node authenticated correctly. One node was safe
+# only because the variable happened to be set there by hand.
+#
+# The value is the measured one, not the convenient one. Measured 2026-09-11: an
+# institute nk_ token authenticates tools/call ONLY as X-Admin-Token; X-API-Key
+# and Authorization: Bearer both return 401. tools/list needs no auth at all, so
+# a 200 there proves nothing -- reading one as proof is the scar behind this.
+DEFAULT_HEADER = "X-Admin-Token"
+
+_warned_default_header = False
+
+
+def _resolve_header() -> str:
+    """The header, and a trace when it was defaulted rather than chosen.
+
+    A default that substitutes silently manufactures a state indistinguishable
+    from a deliberate one: a node nobody configured looks exactly like a node
+    configured correctly, and stays that way. The failing case is not the value
+    being wrong -- it is right -- but that when the institute next changes what
+    it accepts, the unconfigured nodes are unfindable.
+
+    So the substitution still happens (refusing would take down working nodes
+    over a correct value) and it says so once per process. Log line, not an
+    exception: the bound on this is that a sane default may stand, provided it
+    leaves a trace.
+    """
+    global _warned_default_header
+    chosen = (os.getenv("AI_INSTITUTE_MCP_HEADER") or "").strip()
+    if chosen:
+        return chosen
+    if not _warned_default_header:
+        _warned_default_header = True
+        _logger.warning(
+            "AI_INSTITUTE_MCP_HEADER is unset — defaulting to %r. This node is "
+            "indistinguishable from one configured deliberately; set it explicitly "
+            "in the data-dir .env so a future auth change can find it.",
+            DEFAULT_HEADER)
+    return DEFAULT_HEADER
+
 SUPPORTED_HANDS = ("opencode", "claude", "codex", "agy")
 
 
@@ -79,7 +124,7 @@ def settings() -> Optional[dict]:
         # auth error from a missing file and starts hunting. Refuse instead.
         _logger.warning("AI_INSTITUTE_MCP_URL is set but no credential is available — MCP disabled")
         return None
-    header = (os.getenv("AI_INSTITUTE_MCP_HEADER") or "Authorization").strip()
+    header = _resolve_header()
     scheme = os.getenv("AI_INSTITUTE_MCP_SCHEME")
     if scheme is None:
         scheme = "Bearer " if header.lower() == "authorization" else ""
