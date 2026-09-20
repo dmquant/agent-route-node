@@ -229,6 +229,37 @@ class Trap(http.server.BaseHTTPRequestHandler):
         pass                                  # the caller reports, not the server
 
 
+def rpc_error_in(body: bytes):
+    """The JSON-RPC error message in this response, or None.
+
+    Handles both plain JSON and SSE framing (`data: {...}`), because a
+    streamable-HTTP server may answer either and the gate must not care.
+    Returns None when there is no error OR when the body cannot be parsed --
+    an unparseable body is reported as unknown by the caller, never as success.
+    """
+    if not body:
+        return None
+    text = body.decode("utf-8", "replace")
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        err = d.get("error")
+        if isinstance(err, dict):
+            return str(err.get("message") or err)[:160]
+        # A tool can also fail INSIDE a successful result.
+        res = d.get("result")
+        if isinstance(res, dict) and res.get("isError"):
+            return "result.isError: %s" % str(res.get("content"))[:120]
+    return None
+
+
 def utc_now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -328,11 +359,25 @@ def make_proxy(upstream: str):
                 if k.lower() not in DROP_RES:
                     self.send_header(k, v)
             self.end_headers()
+
+            # Keep a bounded copy of the body WHILE streaming it, because
+            # HTTP 200 IS NOT SUCCESS FOR JSON-RPC.
+            #
+            # A JSON-RPC error -- unknown tool, bad arguments, a refusal --
+            # rides inside a 200 as an `error` member. This gate certified
+            # codex on the status code alone, which is the same class of
+            # mistake as reading a tools/list 200 as proof of auth: a signal
+            # adjacent to the thing, accepted instead of the thing.
+            seen, cap = [], 65536
+            total = 0
             try:
                 while True:
                     chunk = up.read(8192)
                     if not chunk:
                         break
+                    if total < cap:
+                        seen.append(chunk[:cap - total])
+                        total += len(chunk)
                     self.wfile.write(chunk)
                     self.wfile.flush()
             except Exception:
@@ -342,6 +387,7 @@ def make_proxy(upstream: str):
                     up.close()
                 except Exception:
                     pass
+            Proxy.calls[-1]["rpc_error"] = rpc_error_in(b"".join(seen))
 
         def do_POST(self):
             self._relay("POST")
@@ -789,7 +835,14 @@ def verify(hand: str, timeout: int, live: bool, server: str = "institute") -> in
     #
     # So a hand that connects and lists but never calls is NOT certified. That
     # is not the same as broken, and the message says so.
-    called = [c for c in ok if c["method"] == "tools/call"]
+    clean = [c for c in ok if c["method"] == "tools/call" and not c.get("rpc_error")]
+    errored = [c for c in ok if c["method"] == "tools/call" and c.get("rpc_error")]
+    if errored and not clean:
+        print("  %-9s FAILED   tools/call returned HTTP 200 wrapping a JSON-RPC ERROR: %s. "
+              "The transport worked and the CALL did not — 200 is not success for "
+              "JSON-RPC." % (hand, errored[0]["rpc_error"]))
+        return FAILED
+    called = clean
     if not called:
         tried = [c for c in mine if c["method"] == "tools/call"]
         if tried:
