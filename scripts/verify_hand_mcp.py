@@ -121,18 +121,57 @@ PROMPT = ('Call the ai-institute MCP tool sessions_get_files with '
           'session_id "verify-probe" and print its raw result. '
           'Call the tool. Do not read any local file and do not answer from memory.')
 
+# HOW EACH HAND IS INVOKED -- AND THE STANDING RISK IN THIS TABLE.
+#
+# This gate's entire claim is that it runs what a dispatch runs. A hand-rolled
+# argv breaks that claim silently, and it has twice:
+#
+#   agy, no -p        the prompt was passed bare; agy reads it only from
+#                     -p/--print/-i/stdin, so it exited with `unexpected
+#                     argument` having never started. Scored "its config does
+#                     not apply under dispatch".
+#   agy, no flags     production appends --add-dir and
+#                     --dangerously-skip-permissions (app/hands/agy_hand.py).
+#                     Without them agy's headless mode AUTO-DENIES the `mcp`
+#                     permission -- so it connects, lists the tools, and is
+#                     blocked from calling one. That looks exactly like a
+#                     dispatch-path config defect and is a missing flag.
+#
+# Both were read as node findings before being traced back here. Every entry
+# below must mirror app/hands/<hand>_hand.py; when a hand's invocation changes
+# there and not here, this gate starts grading a command nobody runs.
 HAND_CMD = {
-    "opencode": lambda cmd, args, p: [cmd, "run", *args, p],
-    "claude":   lambda cmd, args, p: [cmd, "@anthropic-ai/claude-code", "-p",
-                                      "--dangerously-skip-permissions", *args, p],
-    "codex":    lambda cmd, args, p: [cmd, "codex", "exec", "--skip-git-repo-check",
-                                      "--dangerously-bypass-approvals-and-sandbox", *args, p],
-    # agy takes its prompt ONLY from -p/--print, -i, or stdin. Passed bare it
-    # exits with `unexpected argument`, having never started -- which the gate
-    # scored as "its config does not apply under dispatch".
-    "agy":      lambda cmd, args, p: [cmd, *args, "-p", p],
+    "opencode": lambda cmd, args, p, ws: [cmd, "run", *args, p],
+    "claude":   lambda cmd, args, p, ws: [cmd, "@anthropic-ai/claude-code", "-p",
+                                          "--dangerously-skip-permissions", *args, p],
+    "codex":    lambda cmd, args, p, ws: [cmd, "codex", "exec", "--skip-git-repo-check",
+                                          "--dangerously-bypass-approvals-and-sandbox",
+                                          *args, p],
+    # --print is value-taking and consumes the NEXT token, so it must be last
+    # and the prompt must be its immediate value.
+    "agy":      lambda cmd, args, p, ws: [cmd, *args, "--add-dir", ws,
+                                          "--dangerously-skip-permissions",
+                                          "--print", p],
 }
 HAND_BIN = {"opencode": "opencode", "claude": "npx", "codex": "npx", "agy": "agy"}
+
+
+# Hands whose own credential lives in the macOS keychain, which a process
+# descended from an ssh session cannot read.
+KEYCHAIN_HANDS = {"claude"}
+
+
+def ssh_descended() -> bool:
+    return any(os.getenv(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"))
+
+
+# A hand that cannot authenticate ITSELF never reached the MCP question. Its
+# tool list may still have loaded -- the MCP client connects before the model
+# runs -- so the probe sees a clean handshake and no tools/call, which is
+# exactly the shape of a config defect and is not one.
+HAND_AUTH_FAILURE = ("oauth session expired", "could not be refreshed",
+                     "please run /login", "invalid api key", "not authenticated",
+                     "authentication_error")
 
 
 def lan_address() -> str:
@@ -305,6 +344,48 @@ def make_proxy(upstream: str):
     return Proxy
 
 
+def other_servers(hand: str) -> list:
+    """Every OTHER MCP server this hand can reach during the run.
+
+    THE GATE'S BLIND SPOT, AND WHY A VERDICT IS INCOMPLETE WITHOUT THIS.
+
+    Measured on gubei12: `agy` was scored FAILED -- connected, listed, no
+    tools/call -- while its stdout carried the CORRECT institute payload,
+    byte-identical to a direct call. It had not fabricated it. Its node-global
+    registry holds `ros-gateway`, a second server fronting the same estate with
+    a LITERAL nk_ token in two headers, and the hand used that instead.
+
+    So the gate configured server X, watched X, and graded a hand that was
+    quietly succeeding through server Y. A FAILED verdict in that state is
+    false, and a VERIFIED one would have been luck.
+
+    This is also the contract's own governed_coverage warning, measured rather
+    than predicted: actual access is higher than the governed number and is
+    unattributed. Reported, never touched -- these are the operator's servers,
+    and their credentials are not this script's to move.
+    """
+    path = NodeGlobalConfig.PATHS.get(hand)
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        import json as _j
+        with open(path) as fh:
+            reg = _j.load(fh).get("mcpServers") or {}
+    except Exception:
+        return []
+    out = []
+    for name, spec in reg.items():
+        if name == (os.getenv("AI_INSTITUTE_MCP_NAME") or "ai-institute").strip():
+            continue
+        target = spec.get("serverUrl") or spec.get("url") or spec.get("command") or "?"
+        # Name the RISK, never the value. A literal-looking credential is
+        # reported as a fact about the file, not quoted out of it.
+        literal = any(isinstance(v, str) and v and "${" not in v and "{env:" not in v
+                      for v in (spec.get("headers") or {}).values())
+        out.append({"name": name, "target": target, "literal_credential": literal})
+    return out
+
+
 class NodeGlobalConfig:
     """Snapshot and restore a config this verify would otherwise clobber.
 
@@ -388,6 +469,25 @@ def _control(probe_url: str, workspace: str, auth: str) -> str:
 
 
 def verify(hand: str, timeout: int, live: bool) -> int:
+    # THIRD TIME THIS SHAPE HAS COST SOMETHING HERE, so it is a refusal now.
+    #
+    # STAGE1.md already records it: claude keeps its OAuth credential in the
+    # macOS keychain, and a process descended from an ssh session cannot read
+    # it. An earlier run of THIS script over ssh produced
+    # `OAuth session expired and could not be refreshed` -- and because the MCP
+    # client connects before the model runs, the probe saw a clean handshake
+    # and no tools/call, which is indistinguishable from a config defect.
+    #
+    # Reporting FAILED there would have been the same error STAGE1 was
+    # corrected for: a test run over ssh is not a test of production.
+    if hand in KEYCHAIN_HANDS and ssh_descended():
+        print("  %-9s REFUSED  this session is ssh-descended and %s reads its own "
+              "credential from the macOS keychain, which such a process cannot open. "
+              "The MCP client still connects, so a verdict here would look like a "
+              "config defect and be an artefact of the shell. Run it from the launchd "
+              "GUI-domain agent on that node." % (hand, hand))
+        return FAILED
+
     addr = lan_address()
     if not addr:
         print("  %-9s REFUSED  no non-loopback address on this host; a loopback "
@@ -476,8 +576,9 @@ def verify(hand: str, timeout: int, live: bool) -> int:
         return FAILED
     control_n = len(recorder)
 
+    others = other_servers(hand)
     cmd = resolve_cli_path(HAND_BIN[hand])
-    argv = HAND_CMD[hand](cmd, plan.args, PROMPT)
+    argv = HAND_CMD[hand](cmd, plan.args, PROMPT, workspace)
     spawn_env = get_cli_env(workspace)
     spawn_env.update(overrides)
     spawn_env.update(plan.env)
@@ -489,13 +590,14 @@ def verify(hand: str, timeout: int, live: bool) -> int:
         return FAILED
 
     t0 = time.time()
-    tail = ""
+    tail, timed_out = "", False
     try:
         r = subprocess.run(argv, cwd=workspace, env=spawn_env, timeout=timeout,
                            stdin=subprocess.DEVNULL,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         tail = ((r.stderr or b"") + (r.stdout or b"")).decode("utf-8", "replace")
     except subprocess.TimeoutExpired as e:
+        timed_out = True
         # A hit during the run still counts -- but keep the output, because a
         # hand that hangs without dialling says why in it.
         tail = ((e.stderr or b"") + (e.stdout or b"")).decode("utf-8", "replace")
@@ -512,6 +614,14 @@ def verify(hand: str, timeout: int, live: bool) -> int:
             return FAILED
 
     dt = time.time() - t0
+    for o in others:
+        print("  %-9s          ⚠ also reachable during this run: %s -> %s%s"
+              % ("", o["name"], str(o["target"])[:60],
+                 "  [literal credential on disk]" if o["literal_credential"] else ""))
+    if others:
+        print("  %-9s          a verdict below describes the server THIS gate "
+              "configured. The hand could satisfy the task through one of the above "
+              "without touching it." % "")
     mine = recorder[control_n:]               # the control's own hit is not the hand's
     if not mine:
         # Show what the hand said. "It did not dial" is a symptom; the hand
@@ -556,12 +666,24 @@ def verify(hand: str, timeout: int, live: bool) -> int:
     called = [c for c in ok if c["method"] == "tools/call"]
     if not called:
         tried = [c for c in mine if c["method"] == "tools/call"]
+        if tried:
+            why = "tools/call was refused: HTTP %s." % ",".join(str(c["code"]) for c in tried)
+        elif timed_out:
+            why = "The model ran out of time before calling -- raise --timeout."
+        else:
+            # It finished, saw the tool, and chose not to use it. That is about
+            # the model or the tool's NAME under this harness, not the config --
+            # and saying "raise --timeout" to a run that ended in 12s sends the
+            # reader to the wrong place entirely.
+            why = ("The hand FINISHED in %.1fs without calling: it connected, listed, "
+                   "and declined. The config is fine; look at the model or the tool "
+                   "name this harness exposes." % dt)
         print("  %-9s FAILED   connected and listed, but no tools/call was SERVED in "
               "%.1fs (%d call(s): %s). tools/list needs no auth here, so nothing in "
               "this run exercised the credential. %s"
-              % (hand, dt, len(mine), ",".join(methods),
-                 "tools/call was refused: HTTP %s." % ",".join(str(c["code"]) for c in tried)
-                 if tried else "The model never called the tool -- raise --timeout."))
+              % (hand, dt, len(mine), ",".join(methods), why))
+        for line in [l for l in tail.strip().splitlines() if l.strip()][-6:]:
+            print("           | %s" % line[:160])
         return FAILED
 
     print("  %-9s VERIFIED tools/call SERVED at HTTP 200 in %.1fs -- %d call(s): %s"
