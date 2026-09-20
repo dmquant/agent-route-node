@@ -140,6 +140,11 @@ def settings() -> Optional[dict]:
         # ends up presenting a credential that is not the one its config names
         # -- the shape that cost this federation an evening on 2026-09-20.
         "key_var": _KEY_VAR,
+        # Named so a caller can redirect THIS server without guessing which
+        # variable controls it -- the install gate points each configured
+        # server at its own proxy, and mapping by name would break the moment
+        # AI_INSTITUTE_MCP_NAME is set.
+        "url_var": "AI_INSTITUTE_MCP_URL",
         "hands": hands,
     }
 
@@ -181,7 +186,8 @@ def gateway_settings() -> Optional[dict]:
     return {"url": url, "key": key,
             "name": (os.getenv("ROS_GATEWAY_MCP_NAME") or "ros-gateway").strip(),
             "header": "Authorization", "scheme": "Bearer ",
-            "key_var": _GATEWAY_KEY_VAR, "hands": hands}
+            "key_var": _GATEWAY_KEY_VAR, "url_var": "ROS_GATEWAY_MCP_URL",
+            "hands": hands}
 
 
 def servers_for(hand: str) -> list:

@@ -653,17 +653,64 @@ def verify(hand: str, timeout: int, live: bool, server: str = "institute") -> in
                  " or ".join(spec["key_vars"]), where))
         return FAILED
 
+    # ONE PROXY PER CONFIGURED SERVER, not one for the server under test.
+    #
+    # Redirecting only the tested server left every OTHER governed server
+    # pointing at production. agy loads all of its configured servers at
+    # startup, so each run opened live connections this gate did not proxy,
+    # count, or declare -- and the "declared window" was therefore accurate and
+    # incomplete at once, which reads as a full accounting and is not one.
+    #
+    # Now every server the hand is given goes through a proxy to its own real
+    # upstream. The traffic still reaches production, because that is what
+    # makes a live verdict worth anything -- but all of it is observed,
+    # attributable and inside the declared window. The verdict is still judged
+    # on the server under test alone; the rest are reported as observed.
+    srvs, probes, recorders, saved_urls = [], {}, {}, {}
+
+    def stop_all():
+        """Shut every proxy AND put every redirected URL back.
+
+        --all calls verify() once per hand in one process. A URL left pointing
+        at a dead probe would silently mis-configure every later hand, and the
+        gate would report findings about a server nobody is running.
+        """
+        for sv in srvs:
+            try:
+                sv.shutdown()
+            except Exception:
+                pass
+        for var, old in saved_urls.items():
+            if old is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = old
+
     if live:
-        handler = make_proxy(upstream)
-        recorder = handler.calls
+        for cfg in mcp_config.servers_for(hand):
+            h = make_proxy(cfg["url"])
+            sv = http.server.ThreadingHTTPServer((addr, 0), h)
+            threading.Thread(target=sv.serve_forever, daemon=True).start()
+            srvs.append(sv)
+            probes[cfg["name"]] = "http://%s:%d/api/mcp" % (addr, sv.server_address[1])
+            recorders[cfg["name"]] = h.calls
+            saved_urls[cfg["url_var"]] = os.environ.get(cfg["url_var"])
+            os.environ[cfg["url_var"]] = probes[cfg["name"]]
+        tested = (os.getenv(spec["name_var"]) or spec["default_name"]).strip()
+        recorder = recorders.get(tested)
+        if recorder is None:
+            print("  %-9s N/A      %r is not configured for this hand" % (hand, tested))
+            stop_all()
+            return NOT_APPLICABLE
+        probe_url = probes[tested]
+        srv = srvs[0]
     else:
         handler = Trap
         recorder = Trap.hits
-
-    srv = http.server.ThreadingHTTPServer((addr, 0), handler)
-    port = srv.server_address[1]
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    probe_url = "http://%s:%d/api/mcp" % (addr, port)
+        srv = http.server.ThreadingHTTPServer((addr, 0), handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        srvs = [srv]
+        probe_url = "http://%s:%d/api/mcp" % (addr, srv.server_address[1])
 
     guard = NodeGlobalConfig(hand)
     guard.__enter__()
@@ -685,23 +732,24 @@ def verify(hand: str, timeout: int, live: bool, server: str = "institute") -> in
 
     # Build the plan through the SAME code path a dispatch uses. If mcp_config
     # declines this hand, that is a real answer, not an error.
+    # In live mode every server's URL was already redirected above. In trap
+    # mode only the one under test is, because there is nothing to forward to.
     before = os.environ.get(spec["url_var"])
-    # Point ONLY the server under test at the probe. The other stays real, so a
-    # hand configured for both is exercised exactly as it would be dispatched.
-    os.environ[spec["url_var"]] = probe_url
     if not live:
+        os.environ[spec["url_var"]] = probe_url
         os.environ.setdefault(spec["key_vars"][0], "nk_verify_probe")
     try:
         plan = mcp_config.prepare(hand, workspace)
     finally:
-        if before is None:
-            os.environ.pop(spec["url_var"], None)
-        else:
-            os.environ[spec["url_var"]] = before
+        if not live:
+            if before is None:
+                os.environ.pop(spec["url_var"], None)
+            else:
+                os.environ[spec["url_var"]] = before
 
     if not plan and not plan.note.startswith("~/"):
         print("  %-9s N/A      %s" % (hand, plan.note or "not configurable on this node"))
-        srv.shutdown(); guard.__exit__()
+        stop_all(); guard.__exit__()
         return NOT_APPLICABLE
 
     # POSITIVE CONTROL, before the hand is allowed to be judged.
@@ -725,7 +773,7 @@ def verify(hand: str, timeout: int, live: bool, server: str = "institute") -> in
               "and the probe saw %d request(s). A FAILED verdict here would be "
               "unreadable, so none is given."
               % (hand, probe_url, code, len(recorder)))
-        srv.shutdown(); guard.__exit__()
+        stop_all(); guard.__exit__()
         return FAILED
     control_n = len(recorder)
 
@@ -742,15 +790,6 @@ def verify(hand: str, timeout: int, live: bool, server: str = "institute") -> in
     # Found on 2026-09-20 when another estate asked where ~18 gateway calls on
     # gubei12 came from and part of the answer was this. The declared window
     # below covers only the proxied server; these calls are outside it.
-    tested_name = (os.getenv(spec["name_var"]) or spec["default_name"]).strip()
-    untested = ([c["name"] for c in mcp_config.servers_for(hand)
-                 if c["name"] != tested_name] if live else [])
-    if untested:
-        print("  %-9s          ⚠ this run also opens LIVE connections to %s, which are "
-              "NOT proxied, NOT counted below, and NOT inside the declared window. "
-              "A node-global hand loads every configured server at startup."
-              % ("", ", ".join(untested)))
-
     cmd = resolve_cli_path(HAND_BIN[hand])
     argv = HAND_CMD[hand](cmd, plan.args, prompt_for(server), workspace)
     spawn_env = get_cli_env(workspace)
@@ -760,7 +799,7 @@ def verify(hand: str, timeout: int, live: bool, server: str = "institute") -> in
         print("  %-9s REFUSED  PWD is %r, not the workspace. opencode resolves its "
               "project from PWD; a run from the wrong one tests nothing."
               % (hand, spawn_env.get("PWD")))
-        srv.shutdown(); guard.__exit__()
+        stop_all(); guard.__exit__()
         return FAILED
 
     t0 = time.time()
@@ -777,10 +816,10 @@ def verify(hand: str, timeout: int, live: bool, server: str = "institute") -> in
         tail = ((e.stderr or b"") + (e.stdout or b"")).decode("utf-8", "replace")
     except FileNotFoundError:
         print("  %-9s N/A      binary not installed on this node (%s)" % (hand, HAND_BIN[hand]))
-        srv.shutdown(); guard.__exit__()
+        stop_all(); guard.__exit__()
         return NOT_APPLICABLE
     finally:
-        srv.shutdown()
+        stop_all()
         guard.__exit__()
         if not guard.unchanged():
             print("  %-9s REFUSED  node-global config was NOT restored; refusing to "
@@ -806,6 +845,20 @@ def verify(hand: str, timeout: int, live: bool, server: str = "institute") -> in
         print("  %-9s          declared window: %s .. %s UTC — %d forwarded call(s) "
               "attributed to THIS node at the endpoint"
               % ("", stamped[0]["at"], stamped[-1]["at"], len(stamped)))
+
+    # The OTHER servers the hand loaded. Observed, not judged -- but counted,
+    # because an accounting that silently omits them reads as complete and is
+    # not. This is the half that was missing when another estate could not
+    # reconcile a gateway counter against a number this gate had published.
+    if live:
+        for name, calls in recorders.items():
+            if name == tested or not calls:
+                continue
+            times = [c["at"] for c in calls if c.get("at")]
+            print("  %-9s          also observed: %d call(s) to %s%s — the hand loaded it "
+                  "at startup; proxied and counted, not judged"
+                  % ("", len(calls), name,
+                     (" (%s .. %s UTC)" % (times[0], times[-1])) if times else ""))
 
     for o in others:
         print("  %-9s          ⚠ also reachable during this run: %s -> %s%s"
