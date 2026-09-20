@@ -730,6 +730,27 @@ def verify(hand: str, timeout: int, live: bool, server: str = "institute") -> in
     control_n = len(recorder)
 
     others = other_servers(hand)
+
+    # UNDECLARED TRAFFIC THIS RUN WILL GENERATE, named before it happens.
+    #
+    # Only the server under test is redirected at the probe. Every OTHER
+    # governed server keeps its real URL, so a hand that loads all of its
+    # configured servers at startup -- agy does, from the node-global registry
+    # -- opens initialize/tools/list against LIVE endpoints this gate is not
+    # testing and therefore does not observe, count, or declare.
+    #
+    # Found on 2026-09-20 when another estate asked where ~18 gateway calls on
+    # gubei12 came from and part of the answer was this. The declared window
+    # below covers only the proxied server; these calls are outside it.
+    tested_name = (os.getenv(spec["name_var"]) or spec["default_name"]).strip()
+    untested = ([c["name"] for c in mcp_config.servers_for(hand)
+                 if c["name"] != tested_name] if live else [])
+    if untested:
+        print("  %-9s          ⚠ this run also opens LIVE connections to %s, which are "
+              "NOT proxied, NOT counted below, and NOT inside the declared window. "
+              "A node-global hand loads every configured server at startup."
+              % ("", ", ".join(untested)))
+
     cmd = resolve_cli_path(HAND_BIN[hand])
     argv = HAND_CMD[hand](cmd, plan.args, prompt_for(server), workspace)
     spawn_env = get_cli_env(workspace)
