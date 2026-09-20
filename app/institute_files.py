@@ -224,6 +224,18 @@ def _rewrite(prompt: str, files: List[StagedFile], workspace_dir: str) -> str:
     # reasoning blocks. What changes is that the completeness claim is now
     # scoped to the thing it is actually true of, and the reader is given
     # somewhere to put a gap instead of being told there cannot be one.
+    #
+    # SECOND CORRECTION, same block, twenty minutes later. The first fix
+    # qualified the HEAD and left the TAIL asserting "searching the filesystem
+    # will not produce it". That is not merely unqualified -- it is FALSE:
+    # task_puller syncs the session's R2 contents into this same workspace
+    # before the hand runs, and STAGE1 records that as the path actually
+    # delivering files today. A model told not to look would miss files that
+    # are there.
+    #
+    # Head-qualified, tail-asserted is worse than plainly unqualified, because
+    # the author reads the head and believes the block is fixed while the
+    # reader acts on the tail. A keyword audit for "exhaustive" passes it.
     n = len(files)
     body = ["# Staged by the node before this task started. Each file below was fetched",
             "# from the institute and verified present.",
@@ -235,8 +247,10 @@ def _rewrite(prompt: str, files: List[StagedFile], workspace_dir: str) -> str:
             "# CONTENTS: each file below is complete -- nothing is truncated or elided,",
             "#   so a short file is short, not cut off.",
             "#",
-            "# If you need a file that is NOT listed here, say so in your output. It was",
-            "# not requested, and searching the filesystem will not produce it."]
+            "# If you need a file that is NOT listed here, say so in your output -- it",
+            "#   was not requested from the institute for this task. Other files may be",
+            "#   present in this workspace from the session's own sync; this block does",
+            "#   not describe them."]
     for f in files:
         body.append(json.dumps({"filename": f.ref.filename, "path": f.path,
                                 "bytes": f.written, "why": f.ref.why}, ensure_ascii=False))
