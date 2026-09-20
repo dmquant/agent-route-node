@@ -50,6 +50,7 @@ back to 127.0.0.1 and reporting success.
 """
 import argparse
 import http.server
+import json
 import os
 import socket
 import subprocess
@@ -280,8 +281,7 @@ def make_proxy(upstream: str):
             n = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(n) if n else None
             try:
-                import json as _j
-                name = _j.loads(raw or b"{}").get("method") or "-"
+                name = json.loads(raw or b"{}").get("method") or "-"
             except Exception:
                 name = "-"
 
@@ -344,6 +344,39 @@ def make_proxy(upstream: str):
     return Proxy
 
 
+def dispatched_hands():
+    """Which hands the DAEMON actually runs. (list, "") or (None, reason).
+
+    FOURTH TIME A DOCUMENTED LESSON HAS BEEN REPEATED HERE, so it is code now.
+
+    scripts/supervise.py carries the same scar: it hard-coded opencode and told
+    sg01 it was broken while all four of its hands were healthy. The repair was
+    to ask the DAEMON what it runs, "because the daemon is the thing whose view
+    decides whether work runs."
+
+    This gate was studio-shaped in exactly the same way. Measured on gubei12:
+    ENABLE_OPENCODE=false -- opencode is not dispatched there at all -- and
+    --all spent 840 seconds grading it across two runs and reported FAILED
+    twice. A verdict about a hand the node never invokes is noise that looks
+    like a defect.
+
+    Unreadable is UNKNOWN, not empty. supervise.py's second repair read the
+    in-process registry, which is empty outside the daemon, and the script
+    then reported healthy having tested nothing. So None here means "could not
+    ask", and the caller must say so rather than silently verify nothing.
+    """
+    import urllib.request
+    try:
+        req = urllib.request.Request("http://localhost:8017/api/hands/health",
+                                     headers={"User-Agent": "agent-route-node/verify"})
+        h = json.load(urllib.request.urlopen(req, timeout=20)).get("health", {})
+    except Exception as e:
+        return None, repr(e)[:70]
+    if not h:
+        return None, "daemon returned no hand registry"
+    return [n for n, v in h.items() if v.get("enabled")], ""
+
+
 def other_servers(hand: str) -> list:
     """Every OTHER MCP server this hand can reach during the run.
 
@@ -368,9 +401,8 @@ def other_servers(hand: str) -> list:
     if not path or not os.path.exists(path):
         return []
     try:
-        import json as _j
         with open(path) as fh:
-            reg = _j.load(fh).get("mcpServers") or {}
+            reg = json.load(fh).get("mcpServers") or {}
     except Exception:
         return []
     out = []
@@ -704,6 +736,22 @@ def main() -> int:
         ap.error("name a hand or pass --all")
 
     hands = list(mcp_config.SUPPORTED_HANDS) if a.all else [a.hand]
+    if a.all:
+        run, why = dispatched_hands()
+        if run is None:
+            print("  ⚠ could not ask the daemon which hands it runs (%s) -- grading all "
+                  "%d supported hands. A FAILED here may be about a hand this node "
+                  "never dispatches." % (why, len(hands)))
+        else:
+            skipped = [h for h in hands if h not in run]
+            hands = [h for h in hands if h in run]
+            if skipped:
+                print("  not dispatched on this node, so not graded: %s"
+                      % ", ".join(skipped))
+            if not hands:
+                print("  the daemon enables no supported hand on this node; nothing to "
+                      "verify. That is N/A, not a failure.")
+                return NOT_APPLICABLE
     print("  probe binds a LAN address, never loopback")
     print("  mode: %s" % ("LIVE -- recording proxy to the real institute" if a.live
                           else "trap -- transport only, verdicts are not auth verdicts"))
