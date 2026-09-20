@@ -183,3 +183,49 @@ Measured live on Studio02: two real files staged (22,567 and 49,250 bytes), prom
 rewritten, model read from disk. A named file that does not exist fails staging
 with `not_found` and the task is not run. A/B with MCP on and off for opencode
 showed no slowdown from having it configured (83.5s / 105.0s / 31.5s, all exit 0).
+
+## The gate, run for real — 2026-09-20
+
+`scripts/verify_hand_mcp.py --live`. A recording proxy in front of the real
+institute, forwarding the hand's own credential, judging on what the institute
+answers. This is the first end-to-end evidence in this file: every row above
+records what a hand **saw** (`tools/list`) or what a config file **said**.
+
+| hand | node | verdict | what the institute actually served |
+|---|---|---|---|
+| opencode | Studio02 | **VERIFIED** | 6 calls, **`tools/call` at HTTP 200** |
+| claude | gubei12 | connected, not certified | `initialize`, `server/discover`, `tools/list` 200 — no `tools/call` |
+| codex | gubei12 | N/A | declined in code: Bearer only, `X-Admin-Token` not expressible |
+
+`opencode` on Studio02 is the one that closes something: project-local
+`opencode.json` **does** apply under dispatch, `{env:VAR}` expands into the
+header, and `NODE_TOKEN` authenticates as `X-Admin-Token` through to a served
+tool call. **OP-003 confirmed live rather than quoted.**
+
+`claude` proves the narrower thing worth proving — `--mcp-config` applies under
+dispatch, which is what the `~/.claude.json` cwd trap made worth testing at all.
+It is **not** certified: `tools/list` needs no auth here, so nothing in that run
+exercised the credential.
+
+### ⚠ The first three runs of this gate were wrong, and all three were the gate
+
+It returned `FAILED` for `opencode` three times, each with a clean reason that
+named a real-sounding node defect. Every one was my instrument:
+
+| verdict it printed | actual cause |
+|---|---|
+| `Invalid content type, expected "text/event-stream"` | the probe answered JSON; the hand was right |
+| `SSE error: undefined` | the probe emitted one frame and cannot finish a handshake |
+| `the hand did not dial — its config does not apply under dispatch` | the harness overlaid `os.environ` onto the spawn env, restoring the operator's `PWD` over the workspace one. **opencode resolves its project from `PWD`** (`app/hands/base.py:120`), so it loaded no config at all |
+
+Two more, found the same way: `do_GET = do_POST` turned the streamable-HTTP
+stream-open GET into an empty POST that came back **400** — which read as *the
+institute rejects opencode* — and relaying only `Content-Type` dropped
+`Mcp-Session-Id`, which breaks the session on request two.
+
+🔑 **This is the same failure as line 107 above, one layer down.** That claim
+was measured against the endpoint that needs no auth; these verdicts were
+measured against a probe that could not speak the protocol. In both cases the
+output was well-formed, confident, and about the instrument. **The gate is only
+worth its refusals if a refusal cannot mean "my probe is broken" — hence the
+positive control, and hence `--live` being the only mode that certifies.**

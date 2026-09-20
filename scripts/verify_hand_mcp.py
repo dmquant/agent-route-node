@@ -127,7 +127,10 @@ HAND_CMD = {
                                       "--dangerously-skip-permissions", *args, p],
     "codex":    lambda cmd, args, p: [cmd, "codex", "exec", "--skip-git-repo-check",
                                       "--dangerously-bypass-approvals-and-sandbox", *args, p],
-    "agy":      lambda cmd, args, p: [cmd, *args, p],
+    # agy takes its prompt ONLY from -p/--print, -i, or stdin. Passed bare it
+    # exits with `unexpected argument`, having never started -- which the gate
+    # scored as "its config does not apply under dispatch".
+    "agy":      lambda cmd, args, p: [cmd, *args, "-p", p],
 }
 HAND_BIN = {"opencode": "opencode", "claude": "npx", "codex": "npx", "agy": "agy"}
 
@@ -540,13 +543,29 @@ def verify(hand: str, timeout: int, live: bool) -> int:
                  "" if any(c["authed"] for c in mine) else " No auth header reached the probe."))
         return FAILED
 
+    # VERIFIED REQUIRES A SERVED tools/call, not a connection.
+    #
+    # tools/list needs no auth on this endpoint. That single fact is what put a
+    # wrong claim in STAGE1.md for eight days -- three header forms "all
+    # returned 200" because all three were measured against tools/list. A gate
+    # that certifies on a handshake repeats the error it was built after, and
+    # would certify codex, whose Bearer cannot call a tool at all.
+    #
+    # So a hand that connects and lists but never calls is NOT certified. That
+    # is not the same as broken, and the message says so.
     called = [c for c in ok if c["method"] == "tools/call"]
-    print("  %-9s VERIFIED %d call(s) to the real institute in %.1fs, %d at HTTP 200 -- %s"
-          % (hand, len(mine), dt, len(ok), ",".join(methods)))
     if not called:
-        print("  %-9s          note: tools/list succeeded but no tools/call was made. "
-              "tools/list needs no auth, so this run did not exercise the credential."
-              % "")
+        tried = [c for c in mine if c["method"] == "tools/call"]
+        print("  %-9s FAILED   connected and listed, but no tools/call was SERVED in "
+              "%.1fs (%d call(s): %s). tools/list needs no auth here, so nothing in "
+              "this run exercised the credential. %s"
+              % (hand, dt, len(mine), ",".join(methods),
+                 "tools/call was refused: HTTP %s." % ",".join(str(c["code"]) for c in tried)
+                 if tried else "The model never called the tool -- raise --timeout."))
+        return FAILED
+
+    print("  %-9s VERIFIED tools/call SERVED at HTTP 200 in %.1fs -- %d call(s): %s"
+          % (hand, dt, len(mine), ",".join(methods)))
     return VERIFIED
 
 
@@ -557,7 +576,7 @@ def main() -> int:
     ap.add_argument("--live", action="store_true",
                     help="proxy to the REAL institute and judge on what it answers "
                          "(the only mode whose FAILED verdicts are trustworthy)")
-    ap.add_argument("--timeout", type=int, default=90)
+    ap.add_argument("--timeout", type=int, default=180)
     a = ap.parse_args()
     if not a.hand and not a.all:
         ap.error("name a hand or pass --all")
