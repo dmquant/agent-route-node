@@ -130,5 +130,34 @@ check("only the real file reached the worker", calls == ["alpha.md"], repr(calls
 check("a doc ABOUT a 401 is still uploaded",
       asyncio.run(_upload("auth-notes.md", DOC_ABOUT_401)) is True)
 
+print("\nTHE HAND MUST LEARN WHY — ai-institute's question about the first version")
+d = tempfile.mkdtemp()
+fp = os.path.join(d, "recent_reports.md")
+open(fp, "w").write(OPERATOR)
+asyncio.run(workspace_sync._upload_file(
+    _FakeClient(), "https://worker.example", "k", "s1", "recent_reports.md", fp))
+marker = fp + ".NOT_PUBLISHED.md"
+check("a marker is left beside the file", os.path.exists(marker))
+mt = open(marker).read() if os.path.exists(marker) else ""
+check("it says the file was not published", "NOT published" in mt)
+check("it carries the reason", "refusal" in mt.lower())
+check("it says the local file was not deleted", "nothing was deleted" in mt)
+check("it tells the hand to report the document MISSING", "MISSING" in mt)
+check("the original file is untouched", open(fp).read() == OPERATOR)
+check("the marker itself would publish normally (it is not a refusal)",
+      F.refusal_envelope(mt) is None)
+
+print("\nthe marker must not break the sync when the workspace is read-only")
+ro = tempfile.mkdtemp()
+rofp = os.path.join(ro, "x.md")
+open(rofp, "w").write(OPERATOR)
+os.chmod(ro, 0o500)
+try:
+    r_ok = asyncio.run(workspace_sync._upload_file(
+        _FakeClient(), "https://worker.example", "k", "s1", "x.md", rofp)) is False
+finally:
+    os.chmod(ro, 0o700)
+check("still refuses, does not raise, when the marker cannot be written", r_ok)
+
 print("\n%s" % ("ALL PASS" if not fails else "FAILED: %s" % ", ".join(fails)))
 sys.exit(1 if fails else 0)

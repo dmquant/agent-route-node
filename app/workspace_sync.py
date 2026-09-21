@@ -112,6 +112,7 @@ async def _upload_file(client: httpx.AsyncClient, worker_url: str, api_key: str,
         refusal = refusal_envelope(content)
         if refusal:
             print(f"[workspace-sync] REFUSED {session_id}/{rel_path}: {refusal}")
+            _leave_refusal_marker(filepath, rel_path, refusal)
             return False
 
         resp = await client.post(
@@ -127,6 +128,47 @@ async def _upload_file(client: httpx.AsyncClient, worker_url: str, api_key: str,
     except Exception as e:
         print(f"[workspace-sync] Upload failed {session_id}/{rel_path}: {e}")
         return False
+
+
+def _leave_refusal_marker(filepath: str, rel_path: str, refusal: str) -> None:
+    """Tell the HAND why its file did not publish, where the hand will find it.
+
+    ai-institute asked the right question about the first version of this guard:
+    does anything tell the hand why its file did not publish, or does the file
+    simply not appear? It simply did not appear. The refusal went to the node's
+    stdout, which the model that wrote the file never reads.
+
+    That is the same defect the guard exists to fix, one layer up -- a thing
+    that is missing, with nothing at the place you would look to say why. A
+    node that declines to publish and says so only to itself has moved the
+    uninspectable absence rather than removed it.
+
+    So the marker is a SIBLING FILE in the workspace: the hand looks for its
+    output where it wrote it, and finds the reason sitting next to it. It is
+    plain prose, so it publishes normally on the next pass -- which means the
+    session's stored record also carries the explanation, rather than a gap.
+
+    Never raises: a marker that breaks the sync would be a worse bug than the
+    one it reports.
+    """
+    try:
+        with open(filepath + ".NOT_PUBLISHED.md", "w", encoding="utf-8") as fh:
+            fh.write(
+                "# %s was NOT published to the session store\n\n"
+                "This node declined to upload it. The file is still on disk here,\n"
+                "unchanged -- nothing was deleted.\n\n"
+                "## Why\n\n%s\n\n"
+                "## What this means for you\n\n"
+                "The bytes in that file are a service refusal, not the document the\n"
+                "filename promises. Whatever produced it made a request that was\n"
+                "denied, and saved the denial instead of the result.\n\n"
+                "Do NOT summarise, quote, or reason from its contents as though they\n"
+                "were the document. Report the document as MISSING, and say that a\n"
+                "refusal was saved in its place -- that sentence is the useful output\n"
+                "here, and it is more useful than anything the file appears to contain.\n"
+                % (rel_path, refusal))
+    except Exception as e:                       # pragma: no cover - never fatal
+        print(f"[workspace-sync] could not leave a refusal marker for {rel_path}: {e}")
 
 
 def _collect_changed_files(session_dir: str, session_id: str) -> list[tuple[str, str, float]]:
