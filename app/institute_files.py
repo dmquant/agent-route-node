@@ -71,6 +71,27 @@ class StageResult:
     prompt: str = ""
     parse_error: str = ""
 
+    #: The grammar parse_block ENFORCES. Published here because it was
+    #: enforced and nowhere declared — the caller who writes the block is
+    #: another estate, and the penalty for breaking a rule it cannot read is
+    #: that the whole task is refused unrun.
+    #:
+    #: Adopted from rho, which was asked why callers fail more than humans on
+    #: the same surface, tested the question against itself, found every
+    #: enforced argument bound absent from the schema a caller reads, and
+    #: published them. The same question pointed here gives the same answer.
+    GRAMMAR = [
+        "one JSON object per line; blank lines and lines starting with # are ignored",
+        "session_id  REQUIRED, non-empty after trimming",
+        "filename    REQUIRED, non-empty after trimming",
+        "filename    must NOT start with '/' or '~', must NOT contain '..',"
+        " and must NOT start with a drive letter such as 'C:'",
+        "bytes       optional",
+        "why         optional, free text shown to the model beside the file",
+        "a single malformed line refuses the WHOLE task — no file is staged and"
+        " the hand is never called",
+    ]
+
     def failure_text(self) -> str:
         """What the task result says when staging fails. Written for a human
         reading a failed task, not for a model to recover from."""
@@ -78,6 +99,13 @@ class StageResult:
                  "No model time was spent. This is a delivery failure, not a task failure.", ""]
         if self.parse_error:
             lines.append(f"  <INSTITUTE_FILES> block: {self.parse_error}")
+            # State the WHOLE rule, not only the clause that was broken. A
+            # caller who trips one of these cannot see any of them from the
+            # outside, and telling it which line failed without telling it what
+            # a valid line is leaves it guessing at the next attempt.
+            lines.append("")
+            lines.append("  The block grammar this node enforces:")
+            lines.extend("    - " + g for g in self.GRAMMAR)
         for f in self.files:
             if f.ok:
                 lines.append(f"  OK        {f.ref.filename}  ({f.written} bytes)")
