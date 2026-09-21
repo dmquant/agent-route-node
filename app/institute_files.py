@@ -164,6 +164,15 @@ _REFUSAL_MAX = 4096
 # in a document that merely has an "error" field.
 _REFUSAL_SIBLINGS = ("credential_presented", "refusal", "detail", "code", "status_code")
 
+# An `error` member whose VALUE says nothing went wrong.
+#
+# Measured 2026-09-21 by sweeping 193,534 files across both nodes: 11 of 393
+# hits were payloads shaped {"error": "ok", "code": ...}, which is how several
+# upstream APIs spell SUCCESS. Without this the guard declines to publish
+# perfectly good responses -- a 2.8% false-positive rate on real traffic, found
+# only because the sweep printed the error strings instead of a count.
+_NOT_AN_ERROR = {"ok", "success", "succeeded", "none", "null", "0", "no error", "-"}
+
 
 def refusal_envelope(text: str):
     """A one-line description if this body is a service REFUSAL saved as content.
@@ -207,6 +216,8 @@ def refusal_envelope(text: str):
     err = d.get("error") or d.get("message")
     if not isinstance(err, str) or not err:
         return None
+    if err.strip().lower() in _NOT_AN_ERROR:
+        return None                       # an `error` field that reports success
     siblings = [k for k in _REFUSAL_SIBLINGS if k in d]
     if not siblings:
         return None

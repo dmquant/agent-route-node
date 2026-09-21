@@ -70,6 +70,15 @@ check("JSON with `error` but no refusal sibling",
 check("a JSON array", F.refusal_envelope('[{"error":"x","detail":"y"}]') is None)
 check("empty", F.refusal_envelope("") is None)
 check("plain prose", F.refusal_envelope("The report is attached.") is None)
+
+# Found by sweeping real traffic, not by imagining cases: 11 of 393 hits across
+# both nodes were {"error":"ok"}, which is how several upstream APIs spell
+# SUCCESS. The guard would have declined to publish them.
+for ok_val in ("ok", "OK", "success", "none", "0"):
+    check("an `error` member saying %r is not a refusal" % ok_val,
+          F.refusal_envelope('{"error":"%s","code":200}' % ok_val) is None)
+check("a REAL error with a code is still caught",
+      bool(F.refusal_envelope('{"error":"RZYE\u6392\u5e8f\u5217\u4e0d\u5b58\u5728","code":-1}')))
 big = '{"error":"x","detail":"' + ("y" * 5000) + '"}'
 check("a large body is a document, not a refusal", F.refusal_envelope(big) is None,
       "%d bytes" % len(big))
