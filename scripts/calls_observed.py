@@ -83,11 +83,45 @@ class CallCounter:
             def _relay(self, method):
                 n = int(self.headers.get("Content-Length") or 0)
                 raw = self.rfile.read(n) if n else None
-                try:
-                    body = json.loads(raw or b"{}")
-                except Exception:
-                    body = {}
-                name = body.get("method") or method
+
+                # THREE STATES, NOT ONE.
+                #
+                # This used to be `except: body = {}` then
+                # `name = body.get("method") or method`, which recorded the
+                # SAME thing for all three of:
+                #
+                #   no body at all            -> name = "POST"
+                #   a body that will not parse-> name = "POST"
+                #   valid JSON, no `method`   -> name = "POST"
+                #
+                # That is the defect this counter exists to catch, inside the
+                # counter. Its whole job is to answer "did the hand really
+                # call?", and a body TRUNCATED IN TRANSIT was being reported as
+                # a call under its HTTP verb -- which reads as an odd-but-real
+                # request rather than as a broken one. An operator comparing
+                # methods=[POST] against an expected tools/call would conclude
+                # the hand called something strange, not that the bytes were
+                # damaged.
+                #
+                # Worse: `substitute` was then handed {} for an unparseable
+                # body, so any rule keyed on the method silently mis-fires on
+                # exactly the requests that are already broken.
+                body, parse = {}, "ok"
+                if not raw:
+                    parse = "no-body"
+                else:
+                    try:
+                        body = json.loads(raw)
+                        if not isinstance(body, dict):
+                            body, parse = {}, "not-an-object"
+                    except Exception:
+                        parse = "unparseable"
+                if parse != "ok":
+                    name = "%s(%s)" % (method, parse)
+                elif body.get("method"):
+                    name = body["method"]
+                else:
+                    name = "%s(no-method-member)" % method
 
                 sub = outer.substitute(body) if outer.substitute else None
                 if sub is not None:
@@ -157,12 +191,23 @@ class CallCounter:
     def tool_calls(self):
         return [c for c in self.calls if c["method"] == "tools/call"]
 
+    def damaged(self):
+        """Calls whose BODY could not be read as a JSON-RPC request."""
+        return [c for c in self.calls if "(" in c["method"]]
+
     def report(self) -> str:
         """The line that belongs BESIDE a verdict, never instead of one."""
         subbed = sum(1 for c in self.calls if c["substituted"])
         methods = sorted({c["method"] for c in self.calls})
+        note = ""
+        if not self.calls:
+            note = "  ⚠ ZERO CALLS: any claim about what the hand read is unfounded"
+        elif self.damaged():
+            # A damaged body is not a method, and must never be counted as one.
+            note = ("  ⚠ %d call(s) had a body this counter could not read as a"
+                    " request — they are shown as METHOD(reason), and any"
+                    " per-method claim excludes them"
+                    % len(self.damaged()))
         return ("calls_observed=%d tool_calls=%d substituted=%d methods=%s%s"
                 % (len(self.calls), len(self.tool_calls()), subbed,
-                   ",".join(methods) or "-",
-                   "  ⚠ ZERO CALLS: any claim about what the hand read is unfounded"
-                   if not self.calls else ""))
+                   ",".join(methods) or "-", note))

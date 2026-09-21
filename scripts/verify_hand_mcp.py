@@ -316,9 +316,14 @@ def make_proxy(upstream: str):
             n = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(n) if n else None
             tool, arg_names = None, None
+            # Same three-state distinction as scripts/calls_observed.py: a
+            # body that will not parse is not the same fact as a request
+            # carrying no method, and neither is the same as no body at all.
             try:
-                body = json.loads(raw or b"{}")
-                name = body.get("method") or "-"
+                if not raw:
+                    raise ValueError("no-body")
+                body = json.loads(raw)
+                name = body.get("method") or "%s(no-method-member)" % method
                 # WHICH ARGUMENT NAMES THE HAND SENT -- names, never values.
                 #
                 # A refusal reading "unknown argument(s) node_id" is the only
@@ -339,8 +344,9 @@ def make_proxy(upstream: str):
                     args = params.get("arguments")
                     if isinstance(args, dict):
                         arg_names = sorted(args.keys())
-            except Exception:
-                name = "-"
+            except Exception as _e:
+                name = "%s(%s)" % (method, "no-body" if not raw else "unparseable")
+                body = {}
 
             fwd = {k: v for k, v in self.headers.items()
                    if k.lower() not in DROP_REQ}
