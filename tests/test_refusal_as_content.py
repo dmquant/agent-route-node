@@ -71,6 +71,18 @@ _n = F.refusal_envelope('{"success":false,"data":null}')
 check("a failure with no reason SAYS it carries none",
       bool(_n) and "no reason at all" in _n)
 
+print("\nMUST NOT FIRE — ai-institute's sharpening: a false flag BESIDE a real payload")
+check("success:false carrying actual rows is a DOCUMENT",
+      F.refusal_envelope('{"success":false,"message":"partial","rows":[1,2,3]}') is None)
+check("success:false with a populated result",
+      F.refusal_envelope('{"version":"34bda","result":{"pages":1,"data":[1]},'
+                         '"success":false,"code":9201}') is None)
+check("but success:false with result NULL is still a refusal",
+      bool(F.refusal_envelope('{"version":null,"result":null,"success":false,'
+                              '"message":"empty","code":9201}')))
+check("and an empty list payload does not rescue it",
+      bool(F.refusal_envelope('{"success":false,"data":[],"message":"none"}')))
+
 print("\nMUST NOT FIRE — rho's own negative control, and silence")
 check("the SAME API's successful envelope, identical members",
       F.refusal_envelope('{"version":"1","result":{"rows":[1]},"success":true,'

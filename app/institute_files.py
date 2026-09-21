@@ -177,6 +177,11 @@ _NOT_AN_ERROR = {"ok", "success", "succeeded", "none", "null", "0", "no error", 
 # from this set carries nothing but an error, which is what a refusal envelope
 # is. A DOCUMENT that merely records an error also carries its payload -- rows,
 # data, results, items -- and that is the structural difference.
+# Members that carry ACTUAL CONTENT. A body with any of these populated is a
+# document reporting a problem, not an envelope carrying nothing.
+_PAYLOAD_MEMBERS = ("result", "data", "rows", "items", "records", "pages",
+                    "list", "content", "results", "payload")
+
 _ERROR_ONLY_MEMBERS = {
     "error", "message", "msg", "detail", "details", "reason", "refusal",
     "code", "status", "status_code", "statusCode", "credential_presented",
@@ -246,8 +251,26 @@ def refusal_envelope(text: str):
     # and not the text, and their rule is adopted verbatim in spirit: an
     # EXPLICIT false, never an absent flag. A missing `success` is not a
     # declared failure, and a refusal is not inferred from silence.
+    # AND THE PAYLOAD MUST BE EMPTY, WHICH IS AI-INSTITUTE'S SHARPENING.
+    #
+    # A false success flag ALONE is not enough. Measured on their corpus:
+    # keying on it blocked 34 REAL market payloads to catch 13 errors -- a
+    # 2.6:1 false-positive ratio. It is the NULL RESULT beside the false
+    # success that proves the envelope carries nothing.
+    #
+    # Measured on mine: 34 bodies carry a false flag and ALL 34 have a null or
+    # absent payload, so this narrowing costs me nothing today. That is a fact
+    # about my CORPUS, not about my rule -- the rule was exactly as dangerous
+    # as theirs and had simply not met the hazard yet.
+    #
+    # The asymmetry is why it is adopted anyway, and it is theirs: a census
+    # that over-counts is an embarrassment in a room. A GATE that over-blocks
+    # destroys research and says nothing -- the blocked payload never reaches
+    # the store and no one is told.
     for flag in ("success", "ok", "succeeded", "isSuccess"):
         if d.get(flag) is False:
+            if any(d.get(k) not in (None, "", [], {}, 0) for k in _PAYLOAD_MEMBERS):
+                return None            # a real payload that reports partial failure
             why = (d.get("message") or d.get("msg") or d.get("error")
                    or d.get("reason") or d.get("detail") or "")
             why = why if isinstance(why, str) else ""
