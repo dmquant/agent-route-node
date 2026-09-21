@@ -282,3 +282,32 @@ four arms one variable apart on `tools/call`, **the gateway requires it**:
 So `X-Institute-Token` was inert — a second literal copy of the credential on
 disk buying no access, since removed from both nodes and independently
 re-verified as gone.
+
+## The `<INSTITUTE_FILES>` block grammar — declared, 2026-09-21
+
+`parse_block` enforces these. They were enforced and nowhere declared, and the
+caller who writes the block is **another estate**, so the rule it could break
+was one it had never been shown.
+
+```
+one JSON object per line; blank lines and lines starting with # are ignored
+session_id   REQUIRED, non-empty after trimming
+filename     REQUIRED, non-empty after trimming
+filename     must NOT start with '/' or '~'
+             must NOT contain '..'
+             must NOT start with a drive letter such as 'C:'
+bytes        optional
+why          optional, free text shown to the model beside the file
+```
+
+🔴 **A single malformed line refuses the WHOLE task, unrun, exit 65.** It does
+not stage what it can and report the rest. No file is written and the hand is
+never called.
+
+The same list is emitted in the staging failure text (`be14b6f`), but a caller
+who has not failed yet cannot read that — which is the whole defect one layer
+up. It is here so the rule is **inspectable before it costs anything**, which
+is the stronger of the two positions this workstream measured.
+
+If the grammar is wrong for what a caller needs to express — a session-relative
+subdirectory, say — the **rule** should change, not the error message.
