@@ -303,6 +303,24 @@ def _headers(cfg: dict, ref: str) -> dict:
     return {cfg["header"]: cfg["scheme"] + ref}
 
 
+# The agy registry spells a server's endpoint under any of three keys, and the
+# two nodes in this estate disagree TODAY: gubei12 carries `serverUrl`, sg01
+# carries `url` beside a `type` this writer does not model. Both reach the
+# gateway; both are working configurations.
+_URL_KEYS = ("serverUrl", "httpUrl", "url")
+
+
+def _entry_url(entry: dict) -> str:
+    """The endpoint an existing registry entry points at, whatever it calls it."""
+    if not isinstance(entry, dict):
+        return ""
+    for k in _URL_KEYS:
+        v = entry.get(k)
+        if isinstance(v, str) and v:
+            return v
+    return ""
+
+
 def _env_for(servers: list) -> dict:
     """Each server's credential under its OWN variable name."""
     return {c["key_var"]: c["key"] for c in servers}
@@ -496,15 +514,54 @@ def _prepare_agy(servers: list, workspace_dir: str) -> McpPlan:
                         "hosts; a literal can therefore end up presenting another "
                         "machine's identity.", _AGY_CONFIG)
 
-    if all(registry.get(n) == e for n, e in wanted.items()):
+    # COMPARE WHAT THE ENTRY MEANS, NOT HOW IT IS SPELLED, AND MERGE RATHER
+    # THAN REPLACE.
+    #
+    # This used to be `registry.get(n) == wanted[n]` against a freshly built
+    # dict, then `registry.update(wanted)`. Measured 2026-09-21: gubei12's
+    # entries are shaped {disabled, serverUrl, headers} -- this writer's own
+    # shape -- and sg01's are shaped {headers, type, url}, which this writer
+    # did not produce and does not model. Both node's hands reach the gateway,
+    # so both spellings work.
+    #
+    # Against a differently-spelled entry the equality can never hold, so the
+    # "already current" guard is dead and the first agy task REPLACES the
+    # entry: the endpoint moves to `serverUrl` and the unmodelled `type` is
+    # dropped, silently, on a configuration this node did not write. It has not
+    # fired yet only because sg01 sets no ROS_GATEWAY_MCP_URL, so the server is
+    # not in `servers` there at all -- it is armed for the next provisioning
+    # run on exactly the node that still needs one.
+    #
+    # This estate has already broken this file twice in one night. A writer
+    # that owns a file it shares with other authors must read what is there
+    # before deciding it is wrong.
+    changed = []
+    for n, e in wanted.items():
+        cur = registry.get(n)
+        if isinstance(cur, dict) and _entry_url(cur) == e["serverUrl"] \
+                and cur.get("headers") == e["headers"] and not cur.get("disabled"):
+            continue                      # same endpoint, same auth: leave the spelling alone
+        if isinstance(cur, dict):
+            # Keep every key this writer does not model, and keep the endpoint
+            # under the name already in use rather than renaming it.
+            merged = dict(cur)
+            key = next((k for k in _URL_KEYS if k in cur), "serverUrl")
+            merged[key] = e["serverUrl"]
+            merged["headers"] = e["headers"]
+            merged["disabled"] = False
+            registry[n] = merged
+        else:
+            registry[n] = e
+        changed.append(n)
+
+    if not changed:
         # Already correct. Say so rather than rewriting the file on every task.
         return McpPlan(env=_env_for(servers), note="agy registry already current")
-    registry.update(wanted)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, ensure_ascii=False, indent=2)
     os.chmod(path, 0o600)
     return McpPlan(env=_env_for(servers),
-                   note="%s <- %s (node-global%s)" % (_AGY_CONFIG, ", ".join(wanted),
+                   note="%s <- %s (node-global%s)" % (_AGY_CONFIG, ", ".join(changed),
                                                       ", literal key" if literal else ""))
 
 
