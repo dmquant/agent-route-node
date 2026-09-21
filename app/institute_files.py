@@ -173,6 +173,16 @@ _REFUSAL_SIBLINGS = ("credential_presented", "refusal", "detail", "code", "statu
 # only because the sweep printed the error strings instead of a count.
 _NOT_AN_ERROR = {"ok", "success", "succeeded", "none", "null", "0", "no error", "-"}
 
+# Members a pure error report may carry. An object whose members are ALL drawn
+# from this set carries nothing but an error, which is what a refusal envelope
+# is. A DOCUMENT that merely records an error also carries its payload -- rows,
+# data, results, items -- and that is the structural difference.
+_ERROR_ONLY_MEMBERS = {
+    "error", "message", "msg", "detail", "details", "reason", "refusal",
+    "code", "status", "status_code", "statusCode", "credential_presented",
+    "success", "ok", "type", "title", "errors", "error_description",
+}
+
 
 def refusal_envelope(text: str):
     """A one-line description if this body is a service REFUSAL saved as content.
@@ -219,12 +229,32 @@ def refusal_envelope(text: str):
     if err.strip().lower() in _NOT_AN_ERROR:
         return None                       # an `error` field that reports success
     siblings = [k for k in _REFUSAL_SIBLINGS if k in d]
-    if not siblings:
+
+    # A BARE REFUSAL HAS NO SIBLINGS, AND IT IS THE OLDER FORM.
+    #
+    # ai-institute's census keyed on `credential_presented` and missed 548 of
+    # 1,124 -- 49% -- because the refusal this federation served before
+    # 2026-09-15 is sixty bytes with ONE member:
+    #
+    #     {"error":"X-Admin-Token or X-API-Key (viewer:read) required"}
+    #
+    # Mine required a sibling too, so it was blind in exactly the same way, and
+    # blind toward the OLDER half of any corpus.
+    #
+    # The widening must stay structural, because a textual test for "does this
+    # error look like a refusal" is the use/mention trap this file already
+    # documents. The structural fact is: a refusal envelope carries NOTHING BUT
+    # an error report. A document that happens to record an error carries other
+    # members -- rows, data, results -- and those are what distinguish them.
+    whole_object_is_an_error = all(k in _ERROR_ONLY_MEMBERS for k in d)
+    if not siblings and not whole_object_is_an_error:
         return None
+    shape = (", also carries " + ", ".join(siblings)) if siblings else \
+            " (a BARE envelope: its only members are %s)" % ", ".join(sorted(d))
     return ("this file's CONTENT is a %d-byte JSON refusal, not a document — "
-            "error=%r, also carries %s. A fetch that failed was saved as the "
+            "error=%r%s. A fetch that failed was saved as the "
             "file. Do NOT treat this as the report; say it is missing."
-            % (len(text), err[:120], ", ".join(siblings)))
+            % (len(text), err[:120], shape))
 
 
 async def _read_one(client, cfg: dict, ref: FileRef) -> dict:

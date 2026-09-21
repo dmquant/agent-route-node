@@ -50,7 +50,15 @@ check("the description tells the hand what to do", bool(r) and "missing" in r)
 check("`message`+`code` shape also caught",
       bool(F.refusal_envelope('{"message":"unauthorized","code":401}')))
 
-print("\nMUST NOT FIRE — the use/mention controls")
+print("\nMUST FIRE — the BARE pre-2026-09-15 envelope (ai-institute: 548 of 1,124)")
+BARE = '{"error":"X-Admin-Token or X-API-Key (viewer:read) required"}'
+b = F.refusal_envelope(BARE)
+check("the 60-byte one-member form is caught", bool(b), "%d bytes" % len(BARE))
+check("it is reported AS a bare envelope", bool(b) and "BARE envelope" in b)
+check("a bare {message} form too", bool(F.refusal_envelope('{"message":"unauthorized"}')))
+check("error+code with no other members", bool(F.refusal_envelope('{"error":"nope","code":401}')))
+
+print("\nMUST NOT FIRE — the widening must not swallow documents")
 DOC_ABOUT_401 = """# Auth troubleshooting
 
 When no credential is sent the institute answers 401 with a body like
@@ -65,8 +73,12 @@ check("this test file's own docstring is not flagged",
       F.refusal_envelope(__doc__) is None)
 
 print("\nMUST NOT FIRE — documents that merely contain an error member")
-check("JSON with `error` but no refusal sibling",
+check("a document that RECORDS an error keeps its payload",
       F.refusal_envelope('{"error":"none","rows":[1,2,3]}') is None)
+check("an error field beside real data is not a refusal",
+      F.refusal_envelope('{"error":"partial","items":[1],"total":5}') is None)
+check("a bare error saying SUCCESS is still not a refusal",
+      F.refusal_envelope('{"error":"ok"}') is None)
 check("a JSON array", F.refusal_envelope('[{"error":"x","detail":"y"}]') is None)
 check("empty", F.refusal_envelope("") is None)
 check("plain prose", F.refusal_envelope("The report is attached.") is None)
