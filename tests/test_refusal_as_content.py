@@ -168,5 +168,33 @@ finally:
     os.chmod(ro, 0o700)
 check("still refuses, does not raise, when the marker cannot be written", r_ok)
 
+print("\nUNREADABLE STATE IS NOT EMPTY STATE")
+# An unreadable sync-state file used to land on {} silently, which reads as
+# "nothing has ever been synced" and re-uploads every tracked file.
+sd = tempfile.mkdtemp()
+orig_state = workspace_sync.STATE_FILE
+try:
+    workspace_sync.STATE_FILE = os.path.join(sd, "state.json")
+    workspace_sync._load_state()
+    check("no state file at all is a clean empty state",
+          workspace_sync._sync_state == {} and not workspace_sync._state_was_unreadable)
+
+    open(workspace_sync.STATE_FILE, "w").write('{"a": 1.0}')
+    workspace_sync._load_state()
+    check("a readable state file loads", workspace_sync._sync_state == {"a": 1.0})
+    check("and is not marked unreadable", not workspace_sync._state_was_unreadable)
+
+    open(workspace_sync.STATE_FILE, "w").write("{ this is not json")
+    workspace_sync._load_state()
+    check("an UNREADABLE state file still yields an empty dict",
+          workspace_sync._sync_state == {})
+    check("but the caller can tell it apart from having no state",
+          bool(workspace_sync._state_was_unreadable),
+          workspace_sync._state_was_unreadable[:60])
+    check("the unreadable file is not deleted",
+          os.path.exists(workspace_sync.STATE_FILE))
+finally:
+    workspace_sync.STATE_FILE = orig_state
+
 print("\n%s" % ("ALL PASS" if not fails else "FAILED: %s" % ", ".join(fails)))
 sys.exit(1 if fails else 0)

@@ -480,14 +480,31 @@ def other_servers(hand: str) -> list:
     unattributed. Reported, never touched -- these are the operator's servers,
     and their credentials are not this script's to move.
     """
+    # AN UNREADABLE REGISTRY IS NOT AN EMPTY ONE, AND THIS FUNCTION IS A RISK
+    # DISCLOSURE, SO THE DIFFERENCE IS THE WHOLE VALUE.
+    #
+    # This returned [] on both, which renders as "this hand can reach no other
+    # server during the run" -- the strongest safety claim this gate makes,
+    # produced by a failure to read a file. Same shape as the disclosure that
+    # under-counted calls and was read as evidence of quiet.
+    #
+    # A hand with no registry genuinely reaches nothing else. A registry that
+    # will not parse could name anything, including a credential for an estate
+    # this run is not testing, so it must be LOUD and must not be mistaken for
+    # the clean case by anyone reading the output.
     path = NodeGlobalConfig.PATHS.get(hand)
-    if not path or not os.path.exists(path):
-        return []
+    if not path:
+        return []                       # this hand has no node-global registry at all
+    if not os.path.exists(path):
+        return []                       # measured absent: nothing to reach
     try:
         with open(path) as fh:
             reg = json.load(fh).get("mcpServers") or {}
-    except Exception:
-        return []
+    except Exception as e:
+        return [{"name": "!! REGISTRY UNREADABLE", "target": path,
+                 "literal_credential": None,
+                 "unknown": "cannot rule out ANY other server for this hand: %s"
+                            % (repr(e)[:80],)}]
     out = []
     for name, spec in reg.items():
         if name == (os.getenv("AI_INSTITUTE_MCP_NAME") or "ai-institute").strip():

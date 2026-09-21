@@ -28,17 +28,38 @@ IGNORE_PATTERNS = {'.git', '__pycache__', 'node_modules', '.DS_Store', '.venv', 
                    'opencode.json', '.mcp.json'}
 
 _sync_state: dict[str, float] = {}  # file_key -> last synced mtime
+# Non-empty when the state file EXISTS but could not be parsed; see _load_state.
+_state_was_unreadable = ""
 
 
 def _load_state():
     """Load sync state from disk."""
-    global _sync_state
-    try:
-        if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, 'r') as f:
-                _sync_state = json.load(f)
-    except Exception:
+    global _sync_state, _state_was_unreadable
+    # NO STATE FILE and UNREADABLE STATE FILE are different facts with the same
+    # consequence, and only one of them is normal.
+    #
+    # Both used to land on {} silently. An unreadable state file then reads as
+    # "nothing has ever been synced", so the next pass re-uploads every file in
+    # every workspace -- 97,815 of them on gubei12 as of 2026-09-21 -- and the
+    # logs look exactly like a legitimate first run.
+    #
+    # The empty dict still has to stand, because there is nothing else to
+    # proceed with. What changes is that the caller and the log can tell which
+    # case they are in.
+    if not os.path.exists(STATE_FILE):
         _sync_state = {}
+        return
+    try:
+        with open(STATE_FILE, 'r') as f:
+            _sync_state = json.load(f)
+        _state_was_unreadable = ""
+    except Exception as e:
+        _sync_state = {}
+        _state_was_unreadable = "%s: %s" % (STATE_FILE, repr(e)[:120])
+        print("[workspace-sync] ⚠ STATE FILE UNREADABLE — %s. Treating this as a "
+              "FIRST SYNC, which will re-upload every tracked file. This is NOT "
+              "the same as having no state, and the file was not deleted."
+              % _state_was_unreadable)
 
 
 def _save_state():
