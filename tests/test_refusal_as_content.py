@@ -58,6 +58,28 @@ check("it is reported AS a bare envelope", bool(b) and "BARE envelope" in b)
 check("a bare {message} form too", bool(F.refusal_envelope('{"message":"unauthorized"}')))
 check("error+code with no other members", bool(F.refusal_envelope('{"error":"nope","code":401}')))
 
+print("\nMUST FIRE — a body that DECLARES its own failure (rho's third shape)")
+RHO = '{"version":null,"result":null,"success":false,"message":"\u8fd4\u56de\u5b57\u6bb5\u53c2\u6570\u4e0d\u80fd\u4e3a\u7a7a","code":9501}'
+check("rho's exact 101-byte body", bool(F.refusal_envelope(RHO)))
+check("success:false with `msg` rather than `message`",
+      bool(F.refusal_envelope('{"success":false,"data":null,"msg":"bad"}')))
+check("success:false carrying NO reason at all",
+      bool(F.refusal_envelope('{"success":false,"data":null}')))
+check("ok:false with `reason`",
+      bool(F.refusal_envelope('{"ok":false,"result":null,"reason":"denied"}')))
+_n = F.refusal_envelope('{"success":false,"data":null}')
+check("a failure with no reason SAYS it carries none",
+      bool(_n) and "no reason at all" in _n)
+
+print("\nMUST NOT FIRE — rho's own negative control, and silence")
+check("the SAME API's successful envelope, identical members",
+      F.refusal_envelope('{"version":"1","result":{"rows":[1]},"success":true,'
+                         '"message":"ok","code":0}') is None)
+check("an ABSENT success flag is not a declared failure",
+      F.refusal_envelope('{"version":"1","result":{"rows":[1]}}') is None)
+check("success:true beside a populated error field is still not a refusal",
+      F.refusal_envelope('{"success":true,"rows":[1],"error":"none"}') is None)
+
 print("\nMUST NOT FIRE — the widening must not swallow documents")
 DOC_ABOUT_401 = """# Auth troubleshooting
 

@@ -223,6 +223,41 @@ def refusal_envelope(text: str):
         return None
     if not isinstance(d, dict):
         return None
+
+    # THIRD DISCRIMINATOR: A BODY THAT DECLARES ITS OWN FAILURE.
+    #
+    # rho found a shape neither of the other two rules can reach:
+    #
+    #   {"version":null,"result":null,"success":false,
+    #    "message":"<a refusal, in Chinese>","code":9501}
+    #
+    # It is a FULL envelope -- `version` and `result` are payload members, so
+    # the bare rule cannot see it -- and rho's own text rule missed it because
+    # that vocabulary was English over a corpus captured mostly in Chinese.
+    # This detector has never used a text vocabulary, so it is immune to the
+    # language half by construction rather than by care; but three variants of
+    # the same shape DID get past it, measured:
+    #
+    #   {"success":false,"data":null,"msg":"..."}    `msg` is not `message`
+    #   {"success":false,"data":null}                no error string at all
+    #   {"ok":false,"result":null,"reason":"denied"} `reason` is not `message`
+    #
+    # rho's discriminator is the VALUE of a success flag, not the member names
+    # and not the text, and their rule is adopted verbatim in spirit: an
+    # EXPLICIT false, never an absent flag. A missing `success` is not a
+    # declared failure, and a refusal is not inferred from silence.
+    for flag in ("success", "ok", "succeeded", "isSuccess"):
+        if d.get(flag) is False:
+            why = (d.get("message") or d.get("msg") or d.get("error")
+                   or d.get("reason") or d.get("detail") or "")
+            why = why if isinstance(why, str) else ""
+            return ("this file's CONTENT declares its own failure: %r is false in a "
+                    "%d-byte JSON body%s. The service answered and said it did NOT "
+                    "succeed. Do NOT treat this as the document; say it is missing."
+                    % (flag, len(text),
+                       " — %s=%r" % ("reason", why[:120]) if why else
+                       " and carries no reason at all"))
+
     err = d.get("error") or d.get("message")
     if not isinstance(err, str) or not err:
         return None
