@@ -458,10 +458,19 @@ def _prepare_agy(servers: list, workspace_dir: str) -> McpPlan:
     The credential: `agy mcp add` creates this file 0644 — world-readable — so the
     token must not be written literally. The header carries an env reference and
     the spawn carries the value, and the file is forced to 0600 regardless.
-    Whether agy expands ${VAR} in a header at connect time is the one thing here
-    that could not be verified without a live endpoint; if the smoke test comes
-    back 401, set AI_INSTITUTE_MCP_AGY_LITERAL=1 to write the token itself
-    instead, still at 0600.
+    MEASURED 2026-09-20, and the answer is the opposite of what this docstring
+    used to say: agy does NOT expand ${VAR} in a header. A recording proxy saw
+    the credential arrive as the literal string "${...}", with a control
+    confirming the variable WAS in agy's spawn environment at 67 characters --
+    so non-expansion, not an unset variable. AI_INSTITUTE_MCP_AGY_LITERAL=1 IS
+    required for this hand, and the earlier claim that it is not is withdrawn.
+
+    That makes agy the one named exception to never-write-a-literal. The
+    mitigation is the file mode and nothing else, so it is worth saying what the
+    residual risk is: an agy literal is a PER-MACHINE value in a NODE-GLOBAL
+    file that has been observed copied between hosts, which is how sg01 and
+    gubei12 came to present each other's identity. Re-check by hash after any
+    copy of this registry.
     """
     # REFUSE TO WRITE A PRIVATE ADDRESS INTO A NODE-GLOBAL FILE.
     #

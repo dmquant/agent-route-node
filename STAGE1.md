@@ -140,10 +140,31 @@ does not authenticate `tools/call`. Under `DEFAULT_HEADER = X-Admin-Token` codex
 is no longer configured at all, so it now sees nothing — which is the honest
 state rather than a regression.
 
-The two things that could only be verified with a live endpoint both hold: opencode
+> **🔴 RETRACTED 2026-09-21 — the agy half of this paragraph is false, and it was
+> the operational half.** Kept in place rather than deleted, because a reader who
+> acted on it needs to find it here. Measured with a recording proxy
+> (`WS-C-CONTRACT.json` → `credential_expansion`): the credential arrived at the
+> endpoint as the **literal string `${...}`**, with a control confirming the
+> variable *was* present in agy's spawn environment at 67 characters — so this is
+> non-expansion, not an unset variable. **agy does NOT expand `${VAR}` in a
+> header. `AI_INSTITUTE_MCP_AGY_LITERAL` IS needed**, and for agy the literal is
+> required; the mitigation is the file mode (0600, node-global, written
+> idempotently). An agy literal is a per-machine value in a node-global file that
+> has been observed copied between hosts — that is how sg01 and gubei12 came to
+> present each other's identity on 2026-09-20.
+>
+> How it got here: the claim rested on **agy listing the tool**, and `tools/list`
+> needs no auth on this endpoint. That is the same unauthenticated read mistaken
+> for proof twice in this workstream.
+
+~~The two things that could only be verified with a live endpoint both hold: opencode
 expands `{env:VAR}` and agy expands `${VAR}` in a header. The registry on gubei12
 carries the reference, not the token, at 0600. `AI_INSTITUTE_MCP_AGY_LITERAL` is
-not needed.
+not needed.~~
+
+The opencode half stands and was re-confirmed by a served `tools/call`: opencode
+expands `{env:VAR}`, so its governed file carries the variable NAME and the spawn
+carries the value.
 
 **Still open**: ai-institute has not settled how a prompt names the files to fetch
 (their point 4 — a proposed `<INSTITUTE_FILES>` block, offered for rejection). Until

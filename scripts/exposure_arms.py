@@ -47,6 +47,14 @@ tools/list the hand is shown, rewritten in flight by a proxy:
                 re-schema'd to rho's vocabulary
                 (names and count preserved)
 
+  ⚠ THOSE FIGURES ARE AS OF 2026-09-21T~03:30Z AND HAVE ALREADY MOVED. At
+  14:47Z the same gateway served 91 tools and 75 distinct argument names, with
+  4 names shared across estates rather than 1 -- a namespace came up, with no
+  consolidation and nobody deciding anything. The arms do not depend on the
+  numbers: each reads the live tools/list and partitions whatever is there. The
+  figures are illustrative, and a count of a live surface is exactly as
+  perishable as a rate.
+
 A vs B is exposure. C is the control that separates VOCABULARY from LIST
 LENGTH: if a long tool list degrades argument selection on its own, C behaves
 like A; if the carried names are what matters, C behaves like B. A two-arm
