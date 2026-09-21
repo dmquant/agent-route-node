@@ -315,8 +315,30 @@ def make_proxy(upstream: str):
         def _relay(self, method: str):
             n = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(n) if n else None
+            tool, arg_names = None, None
             try:
-                name = json.loads(raw or b"{}").get("method") or "-"
+                body = json.loads(raw or b"{}")
+                name = body.get("method") or "-"
+                # WHICH ARGUMENT NAMES THE HAND SENT -- names, never values.
+                #
+                # A refusal reading "unknown argument(s) node_id" is the only
+                # published evidence of cross-namespace vocabulary carry, and
+                # it is visible ONLY at surfaces that refuse. A surface that
+                # silently discards an unknown argument answers 200 with a
+                # byte-identical payload, so the carry lands nowhere and every
+                # magnitude built from refusal counts is a floor.
+                #
+                # Recording the REQUEST side removes that dependency: the carry
+                # is observable here whether or not the far end complains.
+                # Values are never kept -- an argument value is somebody's data,
+                # an argument NAME is vocabulary, and only the latter is the
+                # measurement.
+                if name == "tools/call":
+                    params = body.get("params") or {}
+                    tool = params.get("name")
+                    args = params.get("arguments")
+                    if isinstance(args, dict):
+                        arg_names = sorted(args.keys())
             except Exception:
                 name = "-"
 
@@ -353,7 +375,8 @@ def make_proxy(upstream: str):
             Proxy.calls.append({"method": name if method == "POST"
                                 else "%s(stream)" % method,
                                 "code": code, "authed": authed,
-                                "unexpanded": unexpanded, "at": utc_now()})
+                                "unexpanded": unexpanded, "at": utc_now(),
+                                "tool": tool, "arg_names": arg_names})
             self.send_response(code)
             for k, v in hdrs.items():
                 if k.lower() not in DROP_RES:
