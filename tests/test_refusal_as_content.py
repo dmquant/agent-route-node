@@ -1,0 +1,134 @@
+"""A failed fetch saved as the file: does the manifest say so?
+
+Reported by the operator 2026-09-21 (`85312249-0c48-4aa0-9a97-05991829c320`):
+a `recent_reports.md` of 236 bytes whose first line is `{"error"`. Something
+fetched it with no credential, got a 401 JSON body, and saved that as the file.
+The institute serves it with status ok and a byte count; this node stages it;
+the manifest tells the hand the file is COMPLETE -- true of the transfer, and
+silent about whether the bytes are the document.
+
+THE POINT OF THIS FILE IS THE NEGATIVE CONTROLS.
+
+agora-pm named the trap in the same hour the defect was reported: a check whose
+subject is a TEXTUAL PATTERN fires on any text that DISCUSSES the pattern. This
+estate writes documents about 401 bodies -- including the docstring of the
+function under test, which contains the exact string a naive rule matches. If
+the detector cannot tell a refusal from a document about refusals, it is worse
+than nothing, because it would flag this repository's own writing.
+
+No network: every payload here is a literal.
+"""
+import importlib, json, os, sys, tempfile
+
+sys.path.insert(0, os.getcwd())
+os.environ.setdefault("AI_INSTITUTE_MCP_URL", "https://institute.example/api/mcp")
+os.environ.setdefault("AI_INSTITUTE_MCP_KEY", "nk_institute")
+
+from app import institute_files as F
+importlib.reload(F)
+
+fails = []
+
+
+def check(label, cond, detail=""):
+    print("  %-4s %s%s" % ("ok" if cond else "FAIL", label, ("  " + detail) if detail else ""))
+    if not cond:
+        fails.append(label)
+
+
+# The operator's payload, verbatim.
+OPERATOR = ('{"error":"X-Admin-Token or X-API-Key (viewer:read|analysts:read) required",'
+            '"credential_presented":false,"refusal":"absent","detail":"no credential was '
+            'presented on this request. Send X-API-Key, Authorization: Bearer, or '
+            'X-Admin-Token."}')
+
+print("MUST FIRE — a refusal saved as content")
+r = F.refusal_envelope(OPERATOR)
+check("the operator's exact 401 body is caught", bool(r), "%d bytes" % len(OPERATOR))
+check("the description names the error", bool(r) and "X-Admin-Token" in r)
+check("the description tells the hand what to do", bool(r) and "missing" in r)
+check("`message`+`code` shape also caught",
+      bool(F.refusal_envelope('{"message":"unauthorized","code":401}')))
+
+print("\nMUST NOT FIRE — the use/mention controls")
+DOC_ABOUT_401 = """# Auth troubleshooting
+
+When no credential is sent the institute answers 401 with a body like
+`{"error":"X-Admin-Token or X-API-Key required","credential_presented":false}`.
+Note `refusal: "absent"` distinguishes an absent credential from a wrong one.
+"""
+check("a markdown doc DISCUSSING a 401 body is not flagged",
+      F.refusal_envelope(DOC_ABOUT_401) is None)
+check("this detector's OWN docstring is not flagged",
+      F.refusal_envelope(F.refusal_envelope.__doc__) is None)
+check("this test file's own docstring is not flagged",
+      F.refusal_envelope(__doc__) is None)
+
+print("\nMUST NOT FIRE — documents that merely contain an error member")
+check("JSON with `error` but no refusal sibling",
+      F.refusal_envelope('{"error":"none","rows":[1,2,3]}') is None)
+check("a JSON array", F.refusal_envelope('[{"error":"x","detail":"y"}]') is None)
+check("empty", F.refusal_envelope("") is None)
+check("plain prose", F.refusal_envelope("The report is attached.") is None)
+big = '{"error":"x","detail":"' + ("y" * 5000) + '"}'
+check("a large body is a document, not a refusal", F.refusal_envelope(big) is None,
+      "%d bytes" % len(big))
+
+print("\nEND TO END — does the manifest carry the marker?")
+ws = tempfile.mkdtemp()
+good = os.path.join(ws, "alpha.md")
+bad = os.path.join(ws, "recent_reports.md")
+open(good, "w").write("# Alpha\n\nReal content.\n")
+open(bad, "w").write(OPERATOR)
+files = [
+    F.StagedFile(ref=F.FileRef("s1", "alpha.md", why="the real one"),
+                 ok=True, path=good, written=os.path.getsize(good)),
+    F.StagedFile(ref=F.FileRef("s1", "recent_reports.md", why="the analyst reports"),
+                 ok=True, path=bad, written=len(OPERATOR),
+                 refusal_shaped=F.refusal_envelope(OPERATOR) or ""),
+]
+block = F._rewrite("<INSTITUTE_FILES>\n{}\n</INSTITUTE_FILES>", files, ws)
+lines = [l for l in block.splitlines() if l.startswith("{")]
+entries = {json.loads(l)["filename"]: json.loads(l) for l in lines}
+check("the refusal file is marked",
+      "REFUSAL_SAVED_AS_CONTENT" in entries["recent_reports.md"])
+check("the real file is NOT marked",
+      "REFUSAL_SAVED_AS_CONTENT" not in entries["alpha.md"])
+check("the marked file still carries its byte count and path",
+      entries["recent_reports.md"]["bytes"] == len(OPERATOR)
+      and entries["recent_reports.md"]["path"] == bad)
+
+print("\nTHE PRODUCER SIDE — the upload must not publish a saved refusal")
+import asyncio
+from app import workspace_sync
+
+calls = []
+
+
+class _FakeResp:
+    status_code = 200
+
+
+class _FakeClient:
+    async def post(self, url, **kw):
+        calls.append(kw.get("json", {}).get("path"))
+        return _FakeResp()
+
+
+async def _upload(name, text):
+    d = tempfile.mkdtemp()
+    fp = os.path.join(d, name)
+    open(fp, "w").write(text)
+    return await workspace_sync._upload_file(
+        _FakeClient(), "https://worker.example", "k", "s1", name, fp)
+
+check("a real document is still uploaded",
+      asyncio.run(_upload("alpha.md", "# Alpha\n\nReal content.\n")) is True)
+check("the 401 body is REFUSED, not published",
+      asyncio.run(_upload("recent_reports.md", OPERATOR)) is False)
+check("only the real file reached the worker", calls == ["alpha.md"], repr(calls))
+check("a doc ABOUT a 401 is still uploaded",
+      asyncio.run(_upload("auth-notes.md", DOC_ABOUT_401)) is True)
+
+print("\n%s" % ("ALL PASS" if not fails else "FAILED: %s" % ", ".join(fails)))
+sys.exit(1 if fails else 0)

@@ -61,6 +61,7 @@ class StagedFile:
     status: str = ""
     error: str = ""
     written: int = 0
+    refusal_shaped: str = ""       # the body looks like a saved service refusal
 
 
 @dataclass
@@ -155,6 +156,66 @@ def parse_block(prompt: str):
     return refs, ""
 
 
+# The largest body that could plausibly be a refusal rather than a document.
+# The one the operator reported was 236 bytes.
+_REFUSAL_MAX = 4096
+
+# Members that appear BESIDE an error in a service refusal and essentially never
+# in a document that merely has an "error" field.
+_REFUSAL_SIBLINGS = ("credential_presented", "refusal", "detail", "code", "status_code")
+
+
+def refusal_envelope(text: str):
+    """A one-line description if this body is a service REFUSAL saved as content.
+
+    Reported 2026-09-21 by the operator: a `recent_reports.md` of 236 bytes
+    whose first line is `{"error"`. A fetch elsewhere sent no credential, got a
+    401 JSON body, and SAVED IT AS THE FILE. The institute then serves it with
+    status ok and a byte count, and this node stages it, and the manifest tells
+    the hand the file is complete -- which is true, and useless. The hand reads
+    an auth error where a report should be.
+
+    THE CHECK IS STRUCTURAL, NOT TEXTUAL, AND THAT IS THE WHOLE DESIGN.
+
+    `85312249-...` drew the obvious rule -- first line starts with `{"error"` --
+    and `9ab0c96e-...` named the trap in the same hour: a check whose subject is
+    a TEXTUAL PATTERN fires on any text that DISCUSSES the pattern. This estate
+    writes documents about 401 bodies. One of them is this docstring, which
+    contains the exact string the naive rule matches, and which must not be
+    flagged if it is ever staged as a file.
+
+    So: the WHOLE body must parse as a single JSON object -- prose discussing a
+    refusal does not -- it must be small, it must carry an error-ish member, and
+    it must carry a sibling that belongs to a refusal rather than to a document.
+    Four conditions, none of them a substring search.
+
+    It MARKS, it does not refuse. A JSON fixture that genuinely records an error
+    is a legitimate file, and the hand is better placed than this node to tell
+    the difference -- provided it is told to look, which is the entire point.
+    """
+    if not text or len(text) > _REFUSAL_MAX:
+        return None
+    t = text.strip()
+    if not (t.startswith("{") and t.endswith("}")):
+        return None
+    try:
+        d = json.loads(t)
+    except Exception:
+        return None
+    if not isinstance(d, dict):
+        return None
+    err = d.get("error") or d.get("message")
+    if not isinstance(err, str) or not err:
+        return None
+    siblings = [k for k in _REFUSAL_SIBLINGS if k in d]
+    if not siblings:
+        return None
+    return ("this file's CONTENT is a %d-byte JSON refusal, not a document — "
+            "error=%r, also carries %s. A fetch that failed was saved as the "
+            "file. Do NOT treat this as the report; say it is missing."
+            % (len(text), err[:120], ", ".join(siblings)))
+
+
 async def _read_one(client, cfg: dict, ref: FileRef) -> dict:
     body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {"name": READ_TOOL,
@@ -212,6 +273,10 @@ async def stage(prompt: str, workspace_dir: str) -> StageResult:
                 with open(dest, "w", encoding="utf-8") as fh:
                     fh.write(res["content"])
                 sf.ok, sf.path, sf.written = True, dest, len(res["content"])
+                sf.refusal_shaped = refusal_envelope(res["content"]) or ""
+                if sf.refusal_shaped:
+                    _logger.warning("institute files: %s staged OK but its content "
+                                    "is a saved refusal, not a document", ref.filename)
             except Exception as e:
                 sf.status, sf.error = "unavailable", f"could not write into the workspace: {e}"
             out.append(sf)
@@ -292,6 +357,12 @@ def _rewrite(prompt: str, files: List[StagedFile], workspace_dir: str) -> str:
             # because it saved codex 58% of its tokens (3,619 -> 1,506) by not
             # making it open a file to discover there is nothing in it.
             entry["EMPTY"] = "0 bytes — this file staged successfully and has NO content"
+        if f.refusal_shaped:
+            # Same cell as EMPTY, and worse: a zero-byte file is visibly empty,
+            # while this one has a byte count and an author. The manifest above
+            # says the file is COMPLETE, which is true of the transfer and says
+            # nothing about whether the bytes are the document.
+            entry["REFUSAL_SAVED_AS_CONTENT"] = f.refusal_shaped
         body.append(json.dumps(entry, ensure_ascii=False))
     return BLOCK_RE.sub("<INSTITUTE_FILES>\n" + "\n".join(body) + "\n</INSTITUTE_FILES>",
                         prompt, count=1)

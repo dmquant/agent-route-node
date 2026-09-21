@@ -12,6 +12,11 @@ from pathlib import Path
 import httpx
 
 from app.config import get_workspaces_dir, get_data_dir
+# One detector, two sites: the upload refuses to publish a saved refusal and the
+# staging manifest marks one that is already stored. Sharing the function is the
+# point -- two spellings of "is this a refusal?" would drift, and the one that
+# drifted would be the one nobody was watching.
+from app.institute_files import refusal_envelope
 WORKSPACES_DIR = get_workspaces_dir()
 STATE_FILE = os.path.join(get_data_dir(), '.workspace_sync_state.json')
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
@@ -82,6 +87,32 @@ async def _upload_file(client: httpx.AsyncClient, worker_url: str, api_key: str,
 
         with open(filepath, 'r', errors='replace') as f:
             content = f.read()
+
+        # DO NOT UPLOAD A SAVED REFUSAL INTO THE SHARED STORE.
+        #
+        # This is where the operator's 2026-09-21 defect actually enters the
+        # federation. Something in a workspace fetched a URL with no credential,
+        # got a 401 JSON body, and wrote it to `recent_reports.md`. This
+        # function then walks the session directory, finds a changed file, and
+        # uploads its bytes as the artifact. The institute stores it; a later
+        # task stages it back with status ok and 236 bytes; the hand reads an
+        # auth error where a report should be.
+        #
+        # The node cannot stop a hand writing a bad file into its own workspace.
+        # It CAN decline to publish one, and this is the last point where the
+        # bytes are still local.
+        #
+        # Refusing is the smaller harm here: an unshared file is still on disk
+        # in the workspace, while a shared one becomes somebody else's input and
+        # carries a byte count that makes it look like a document.
+        #
+        # AND THE REFUSAL IS PRINTED WHERE THE SUCCESSES ARE PRINTED. A silent
+        # skip is an absence nobody can inspect, which is the defect one layer
+        # up from the one being fixed.
+        refusal = refusal_envelope(content)
+        if refusal:
+            print(f"[workspace-sync] REFUSED {session_id}/{rel_path}: {refusal}")
+            return False
 
         resp = await client.post(
             f"{worker_url}/api/sessions/{session_id}/workspace/upload",
