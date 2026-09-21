@@ -79,7 +79,16 @@ MAX = 1 << 20
 
 
 def sweep(root: str):
-    examined, hits = 0, []
+    """(walked, eligible, hits). WALKED IS NOT THE DENOMINATOR.
+
+    Measured 2026-09-21 across both nodes: of the files this sweep walks, 73%
+    are larger than the detector's 4 KiB cap and could never have produced a
+    hit. Reporting the walked count as the population put 142,610 structurally
+    unreachable files into a denominator, which is the same absent-versus-
+    unexaminable conflation this whole class is about -- in my own headline
+    number, on a figure two other estates were reasoning from.
+    """
+    walked, eligible, hits = 0, 0, []
     for dirpath, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in SKIP]
         for f in files:
@@ -93,11 +102,14 @@ def sweep(root: str):
                     content = fh.read()
             except Exception:
                 continue
-            examined += 1
+            walked += 1
+            if len(content) > 4096:
+                continue            # beyond the detector's reach, by construction
+            eligible += 1
             why = refusal_envelope(content)
             if why:
                 hits.append((p, len(content), why))
-    return examined, hits
+    return walked, eligible, hits
 
 
 def main() -> int:
@@ -107,17 +119,19 @@ def main() -> int:
         print("usage: sweep_refusals.py <dir> [<dir> ...]")
         return 2
 
-    total_examined, total_hits, empty_roots = 0, 0, []
+    total_examined, total_walked, total_hits, empty_roots = 0, 0, 0, []
     for root in roots:
         if not os.path.isdir(root):
             print("%-40s NOT A DIRECTORY — nothing was examined here" % root)
             empty_roots.append(root)
             continue
-        examined, hits = sweep(root)
-        total_examined += examined
+        walked, eligible, hits = sweep(root)
+        total_examined += eligible
+        total_walked += walked
         total_hits += len(hits)
-        print("%-40s examined=%-6d hits=%d" % (root, examined, len(hits)))
-        if not examined:
+        print("%-40s walked=%-7d eligible=%-6d hits=%d"
+              % (root, walked, eligible, len(hits)))
+        if not walked:
             empty_roots.append(root)
         for p, n, why in hits:
             print("    %s  (%d bytes)" % (p, n))
@@ -133,7 +147,16 @@ def main() -> int:
         print("  uninspectable absence this detector exists to catch.")
         return 2
 
-    print("population=%d  hits=%d" % (total_examined, total_hits))
+    # The denominator is ELIGIBLE, never WALKED.
+    print("walked=%d   ELIGIBLE POPULATION=%d   hits=%d" %
+          (total_walked, total_examined, total_hits))
+    if total_walked:
+        print("%.1f%% of walked files are over the 4 KiB cap and were NEVER"
+              % (100.0 * (total_walked - total_examined) / total_walked))
+        print("  eligible for a hit. They are UNEXAMINED, not clean.")
+    print("SCOPE: this detects a JSON refusal ENVELOPE under 4 KiB. A large")
+    print("  saved error PAGE -- rho's 34,580-byte Vanguard 404 -- is the same")
+    print("  class of defect and is outside this detector by construction.")
     if total_hits:
         print("Each hit is an artefact your fix did not reach. A hit in a tree")
         print("you do not write is the DISJOINT SET, and it belongs to whoever")
