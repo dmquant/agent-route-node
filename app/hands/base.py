@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Optional, AsyncGenerator, Callable, Any, List
 import codecs
 import os
+import signal
 import shutil
 import re
 
@@ -107,6 +108,54 @@ def resolve_cli_path(binary: str) -> str:
 
     # 5. Fallback — return bare name and let subprocess raise if missing
     return binary
+
+
+# A hand is never the only process it starts.
+#
+# MEASURED 2026-09-21 on this machine, after rho reported the shape from its own
+# host: a wall that calls process.kill() on a launcher kills the LAUNCHER. A
+# grandchild kept writing for the full three seconds after the wall fired -- 4
+# lines at the kill, 10 afterwards -- while the same test with a new session and
+# a group kill stopped it dead at 4 and 4.
+#
+# That matters here because almost nothing this node runs is a leaf process:
+#
+#     claude, codex   npx -> node -> the real CLI
+#     opencode        an npm .bin shim on the studios
+#     any hand        spawns providers and tool processes of its own
+#
+# So a timed-out task reported as killed can leave a model hand running, still
+# holding the workspace and still spending tokens, while the record says the
+# task ended at the wall. rho's phrasing is the one to keep: the guard's FAILURE
+# reads exactly like the guard never firing.
+#
+# Two calls, and they must be used together -- a group kill needs a group, and
+# start_new_session is what makes one.
+def spawn_kwargs() -> dict:
+    """Give a spawned hand its own process group, so a wall can reach its children."""
+    return {"start_new_session": True}
+
+
+def kill_process_tree(process, sig=signal.SIGKILL) -> str:
+    """Kill the hand AND everything it started. Returns what actually happened.
+
+    Falls back to killing the direct child when there is no group to kill --
+    which is the old behaviour, and is still better than raising inside a
+    timeout handler.
+    """
+    pid = getattr(process, "pid", None)
+    if pid is None:
+        return "no pid"
+    try:
+        os.killpg(os.getpgid(pid), sig)
+        return "killed process group %d" % os.getpgid(pid)
+    except (ProcessLookupError, PermissionError, OSError) as e:
+        try:
+            process.kill()
+            return "group kill unavailable (%s); killed pid %d only — " \
+                   "CHILDREN MAY SURVIVE" % (type(e).__name__, pid)
+        except Exception as e2:
+            return "could not kill pid %d: %s" % (pid, e2)
 
 
 def get_cli_env(cwd: str = "") -> dict:

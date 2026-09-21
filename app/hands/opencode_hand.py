@@ -50,7 +50,7 @@ from typing import Optional, Callable, Any
 from app.mcp_config import prepare as mcp_prepare
 from app.hands.base import (
     Hand, HandResult, _NOISE_PATTERNS, resolve_cli_path, get_cli_env,
-    utf8_stream_decoder,
+    utf8_stream_decoder, spawn_kwargs, kill_process_tree,
 )
 
 
@@ -297,6 +297,10 @@ class OpencodeHand(Hand):
                 # node process's stdin, and a CLI that reads it at startup hangs forever
                 # on an open-but-silent pipe. Measured on opencode: identical command,
                 # same env, timed out at 60s inherited and returned in 7s on DEVNULL.
+                # Its own process group, so the wall below can reach whatever
+                # this hand starts. opencode is an npm .bin shim on the studios,
+                # so the binary named here is a launcher, not the work.
+                **spawn_kwargs(),
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -386,10 +390,17 @@ class OpencodeHand(Hand):
             )
             exit_code = await process.wait()
         except asyncio.TimeoutError:
-            process.kill()
+            # Kill the GROUP, not the launcher. Measured 2026-09-21: a bare
+            # process.kill() here left the grandchild running while this
+            # returned "timed out" -- so the task read as walled and the model
+            # hand kept going, holding the workspace and spending tokens.
+            how = kill_process_tree(process)
             await process.wait()
+            logger.warning("opencode wall at %ss: %s", self.timeout_s, how)
             return HandResult(
-                output=f"opencode timed out after {self.timeout_s}s",
+                # Say what was killed, not just that time ran out. A wall that
+                # could not reach the children must not report a clean stop.
+                output=f"opencode timed out after {self.timeout_s}s ({how})",
                 exit_code=124,
                 metrics=_metrics(events),
             )
