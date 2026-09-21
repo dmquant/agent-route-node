@@ -26,10 +26,25 @@ as this one — cannot be a hit.
 
 WHAT IS AND IS NOT A FINDING
 
-    HIGH    except -> assign or return an EMPTY value
-            the caller now sees a well-formed nothing
-    LOW     except -> pass / log only
-            the prior value stands; usually deliberate, reported separately
+    SHAPE-HIGH  except -> assign or return an EMPTY value
+                the caller now sees a well-formed nothing
+    SHAPE-LOW   except -> pass / log only
+                the prior value stands; usually deliberate, reported separately
+
+THE COUNT IS A COUNT OF SHAPES, NOT OF DEFECTS, AND THE LABEL SAYS SO.
+
+epistates measured the gap on their own code: 10 sites of the shape, of which 3
+were correctly guarded downstream, 4 were wrong only in a REASON STRING, and 1
+was a real defect. Publishing the first number as the second is the denominator
+error this whole round kept finding elsewhere.
+
+Measured here the same way: 31 shapes, 2 defects. `lan_address()` returning ""
+is deliberate and its caller refuses on it; an upload handler returning False is
+an honest failure. So classify by CONSEQUENCE before quoting the number, and ask
+of each site: what does EMPTY MEAN to whoever reads this? A coverage set reads
+as "nothing to check", a safety disclosure as "nothing dangerous", a sync state
+as "nothing ever synced". There is no surface where an empty collection reads as
+a warning, which is why these survive review: the output looks like good news.
 
 An intentional case is silenced by putting `ABSENT-OK:` and a reason in a comment
 on or just above the handler. Requiring a REASON rather than a bare pragma is the
@@ -190,16 +205,20 @@ def main() -> int:
         total_h += len(high)
         total_l += len(low)
         for ln, caught, detail in high:
-            print("HIGH %s:%d  except %s -> %s" % (p, ln, caught, detail))
+            print("SHAPE-HIGH %s:%d  except %s -> %s" % (p, ln, caught, detail))
         for ln, caught, detail in low:
-            print("low  %s:%d  except %s -> %s" % (p, ln, caught, detail))
+            print("shape-low  %s:%d  except %s -> %s" % (p, ln, caught, detail))
 
-    print("\nfiles=%d  HIGH=%d  low=%d" % (len(files), total_h, total_l))
+    print("\nfiles=%d  SHAPES(high)=%d  shapes(low)=%d" % (len(files), total_h, total_l))
+    print("THESE ARE SHAPE COUNTS, NOT DEFECT COUNTS. Classify by consequence")
+    print("before quoting them: on this repo 31 shapes were 2 defects, and on")
+    print("another estate 10 shapes were 1.")
     if not files:
         print("⚠ ZERO FILES EXAMINED — not a clean result.")
         return 2
-    print("HIGH: an unreadable thing became a well-formed empty one. Either make")
-    print("the failure visible to the caller, or write ABSENT-OK: <reason>.")
+    print("For each: an unreadable thing became a well-formed empty one. Ask what")
+    print("EMPTY MEANS to whoever reads it — then make the failure visible, or")
+    print("write ABSENT-OK: <reason>.")
     return 1 if total_h else 0
 
 
