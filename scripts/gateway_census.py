@@ -51,6 +51,28 @@ def _endpoint(server: str = "ros-gateway"):
     return url, headers
 
 
+def _key_digest(headers):
+    """The FULL digest, for COMPARISON ONLY. Never printed.
+
+    epistates 67fb6308-79c7-4671-b934-957098c950a1 fixed this exact class in their
+    own census and their fix invalidates the disposition this file carried an hour
+    ago. LFAB-113 said widening the prefix would rekey every stored census and
+    break the comparison it exists to make -- true of WIDENING, and the fix is not
+    a widening. It is a SPLIT:
+
+        key_fingerprint   sha256[:12]   PUBLISHED, human-comparable, never compared
+        key_digest        sha256        COMPARED, never published
+
+    which is this estate's own rule -- display and comparison must not share a
+    lossy path -- applied to the one site in this estate that was breaking it.
+    """
+    auth = [v for k, v in headers.items()
+            if k.lower() in ("authorization", "x-admin-token", "x-api-key")]
+    if not auth:
+        return None
+    return hashlib.sha256("|".join(sorted(auth)).encode()).hexdigest()
+
+
 def _key_fingerprint(headers):
     """sha256 prefix of the credential, never the credential.
 
@@ -111,10 +133,27 @@ def census():
         "seat": os.uname().nodename.split(".")[0],
         "endpoint_host": urllib.parse.urlparse(url).hostname,
         "key_fingerprint": _key_fingerprint(headers),
+        "key_digest": _key_digest(headers),
         "total": len(tools),
         "namespaces": namespaces,
         "tools": args,
     }
+
+
+def _seat_key(c):
+    """What the seat comparison actually uses, with the weak path NAMED.
+
+    A capture taken before key_digest existed has only the 12-char prefix. It
+    must not silently fall back to comparing that -- the whole point is that a
+    lossy value is not a comparison key -- so it compares as an explicitly
+    marked PREFIX-ONLY token, which can only equal another PREFIX-ONLY token
+    from the same prefix, and the reader is told.
+    """
+    d = c.get("key_digest")
+    if d:
+        return d
+    f = c.get("key_fingerprint")
+    return ("PREFIX-ONLY:%s" % f) if f else None
 
 
 def report(now, prev):
@@ -160,22 +199,18 @@ def report(now, prev):
     # at both seats -- and a guess that is stated can be refused by someone who
     # knows better, while a guess inside a subtraction cannot.
     def _seat(c):
-        # THE ONE TRUNCATION IN THIS ESTATE THAT REACHES A COMPARISON, and its
-        # failure direction is the wrong one.
+        # THIS COMPARISON WAS LOSSY AND FAILED OPEN, AND LFAB-113 DECLINED TO FIX IT
+        # ON A PREMISE THAT WAS WRONG.
         #
-        # epistates c04b39c9-3c83-40fb-acf7-56f0f6aadb8b names the class: a value
-        # truncated BEFORE storage silently becomes the comparison baseline, so
-        # display and comparison must not share a lossy path. Audited across this
-        # estate, every other slice is display-only. This one is not: the
-        # fingerprint is sha256[:12] and it is stored and compared here.
-        #
-        # A hash prefix is a deliberate elision rather than a lost denominator, so
-        # this is not epistates' defect. What it shares is the direction: 48 bits,
-        # and a collision makes two DIFFERENT credentials compare as the SAME seat
-        # -- which PERMITS a delta this function otherwise refuses. It fails open.
-        # Stated rather than widened, because widening the prefix would change the
-        # key of every stored census and break the comparison it exists to make.
-        return (c.get("seat"), c.get("endpoint_host"), c.get("key_fingerprint"))
+        # That packet reported the site correctly -- sha256[:12], stored and
+        # compared, and a collision makes two DIFFERENT credentials read as ONE
+        # seat, which PERMITS the cross-seat delta this function exists to refuse
+        # -- and then said the only fix was to widen the prefix, which would rekey
+        # every stored census. True of widening. epistates 67fb6308 showed the fix
+        # is a SPLIT rather than a widening, and demonstrated it by FORCING a
+        # collision rather than arguing from probability. Both adopted; see
+        # _key_digest and _seat_key above.
+        return (c.get("seat"), c.get("endpoint_host"), _seat_key(c))
 
     def _norm(n):
         return n.rsplit("__", 1)[-1]
