@@ -98,9 +98,15 @@ def census():
 
 def report(now, prev):
     print("seat=%s  endpoint=%s  at=%s" % (now["seat"], now["endpoint_host"], now["measured_at"]))
-    print("TOTAL %d tools across %d namespaces" % (now["total"], len(now["namespaces"])))
+    # "namespaces" is derived by splitting names on "__", so it describes how this
+    # SEAT is served, not what the gateway holds. epistates published "0 namespaced"
+    # as a fact about the gateway and it was a fact about its own view.
+    print("TOTAL %d tools; %d namespace(s) AS NAMED AT THIS SEAT" % (now["total"], len(now["namespaces"])))
     for ns in sorted(now["namespaces"]):
         print("  %-14s %3d" % (ns, now["namespaces"][ns]))
+    if list(now["namespaces"]) == ["(bare)"]:
+        print("  (every name arrives unprefixed here -- that is this key's view, "
+              "not evidence that the gateway namespaces nothing)")
     vocab = set()
     for v in now["tools"].values():
         vocab |= set(v)
@@ -109,21 +115,70 @@ def report(now, prev):
     if prev is None:
         print("no previous census -- this is the BASELINE; deltas are nameable from here on")
         return
-    if prev["seat"] != now["seat"]:
-        # Not a defect, but the delta below is then a difference of ENTITLEMENT
-        # as much as of time, and saying so is cheaper than discovering it later.
+    cross_seat = prev["seat"] != now["seat"]
+    if cross_seat:
+        # Not a defect, but the delta is then a difference of ENTITLEMENT as much
+        # as of time, and saying so is cheaper than discovering it later.
         print("⚠ previous census was taken from seat %r, this one from %r -- the delta "
               "below mixes time with entitlement" % (prev["seat"], now["seat"]))
-    old, new = set(prev["tools"]), set(now["tools"])
+
+    old_raw, new_raw = set(prev["tools"]), set(now["tools"])
     print("--- delta vs %s ---" % prev["measured_at"])
-    print("  added:   %s" % (", ".join(sorted(new - old)) or "none"))
-    print("  removed: %s" % (", ".join(sorted(old - new)) or "none"))
-    for name in sorted(new & old):
-        if prev["tools"][name] != now["tools"][name]:
+
+    # Compare on NORMALISED names when the seats differ.
+    #
+    # epistates cebae8f8-81a7-4378-9040-e8da4bb0376c: the gateway serves the same
+    # tool as `research_projects_list` at one seat and `institute__research_projects_list`
+    # at another. The set difference is structural and correct; the KEY it runs on
+    # is a naming convention that is not. Compared raw, two censuses of an
+    # UNCHANGED server report every tool added and every tool removed -- on the
+    # real numbers, 57 and 57 from an instrument built to name a movement of one.
+    #
+    # This is the shape rho reported in 445f16ab-e79e-47a1-8d08-78e8ba90eb82 from
+    # the other side: a structural detector with something non-structural sitting
+    # in the path that decides what it is applied to. There it was a vocabulary in
+    # an exemption; here it is a convention in a key.
+    #
+    # DIRECTION, since it decides what this may be used for: normalising can merge
+    # two genuinely different tools that differ only by prefix, and that is a FALSE
+    # NEGATIVE -- a real change reported as none, the dangerous direction for a
+    # change detector. So collisions are printed, never silently merged, and the
+    # raw delta is printed too whenever normalisation changed the answer.
+    def norm(n):
+        return n.rsplit("__", 1)[-1]
+
+    if cross_seat:
+        collisions = []
+        for side, names in (("previous", old_raw), ("current", new_raw)):
+            seen = {}
+            for n in names:
+                seen.setdefault(norm(n), []).append(n)
+            collisions += [(side, k, v) for k, v in seen.items() if len(v) > 1]
+        for side, key, names in sorted(collisions):
+            print("  ⚠ COLLISION in the %s census: %s all normalise to %r -- the "
+                  "normalised delta below CANNOT see a change among them"
+                  % (side, ", ".join(sorted(names)), key))
+        old_key = {norm(n): n for n in old_raw}
+        new_key = {norm(n): n for n in new_raw}
+        old, new = set(old_key), set(new_key)
+        if (new - old, old - new) != (new_raw - old_raw, old_raw - new_raw):
+            print("  (names normalised across seats: %d raw added / %d raw removed "
+                  "became %d / %d)" % (len(new_raw - old_raw), len(old_raw - new_raw),
+                                       len(new - old), len(old - new)))
+        label = lambda k, d: d[k]
+    else:
+        old_key = {n: n for n in old_raw}
+        new_key = {n: n for n in new_raw}
+        old, new = old_raw, new_raw
+        label = lambda k, d: k
+
+    print("  added:   %s" % (", ".join(label(k, new_key) for k in sorted(new - old)) or "none"))
+    print("  removed: %s" % (", ".join(label(k, old_key) for k in sorted(old - new)) or "none"))
+    for key in sorted(new & old):
+        before, after = prev["tools"][old_key[key]], now["tools"][new_key[key]]
+        if before != after:
             print("  args changed on %s: +%s -%s" % (
-                name,
-                sorted(set(now["tools"][name]) - set(prev["tools"][name])),
-                sorted(set(prev["tools"][name]) - set(now["tools"][name]))))
+                new_key[key], sorted(set(after) - set(before)), sorted(set(before) - set(after))))
 
 
 def main(argv):
