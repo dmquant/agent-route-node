@@ -88,5 +88,44 @@ for _, out in [run("bad pattern", subject, "zzz-never", "no", "EXEC "),
     check("no bare integer in a fault line", "INSTRUMENT FAULT" in out and
           not any(tok.isdigit() for tok in out.split()[1:3]), out[:70])
 
+print("\nIDENTITY -- rho 3f2e681c: the right CLASS is not the right INSTANCE")
+sibling = os.path.join(d, "sibling.txt")
+with open(sibling, "w") as fh:
+    fh.write("EXEC zzz | hand=codex\n")           # same class, different instance
+WITNESS = "EXEC aaa | hand=codex"
+v, out = run("witness present", subject, "not ready", "the server was not ready",
+             "EXEC ", witness=WITNESS)
+check("the intended subject passes", v == 0, out[:60])
+check("and the witness is PRINTED so the reader can judge it", "witness" in out)
+v, out = run("witness absent", sibling, "not ready", "the server was not ready",
+             "EXEC ", witness=WITNESS)
+check("a sibling of the same class is REFUSED", v is None)
+check("and it says IDENTITY FAILED, not REACH", "IDENTITY FAILED" in out, out[:80])
+
+print("\nno witness must SAY that identity was not asserted")
+v, out = run("class only", subject, "not ready", "the server was not ready", "EXEC ")
+check("says IDENTITY NOT ASSERTED", "IDENTITY NOT ASSERTED" in out, out[:70])
+
+print("\nMONOTONIC -- an append-only subject that SHRANK is a fault, not a zero")
+st = os.path.join(d, "state")
+os.makedirs(st, exist_ok=True)
+v, out = run("first sight", subject, "not ready", "the server was not ready",
+             "EXEC ", witness=WITNESS, state_dir=st)
+check("records a high water on first sight", v == 0 and "high water new" in out, out[-60:])
+with open(subject, "w") as fh:                      # truncate under the instrument
+    fh.write("EXEC aaa | hand=codex\n")
+v, out = run("after truncation", subject, "not ready", "the server was not ready",
+             "EXEC ", witness=WITNESS, state_dir=st)
+check("a shrunken subject is refused", v is None)
+check("and it names rotation or truncation", "SHRANK" in out, out[:90])
+
+print("\nKNOWN RESIDUAL, pinned rather than claimed closed:")
+print("  · a witness cannot be verified BY the tool -- only the caller knows")
+print("    whether it identifies, so it is printed and the judgement is the")
+print("    reader's rather than the instrument's")
+print("  · a subject that CONTAINS the witness plus foreign content -- two logs")
+print("    concatenated -- passes every arm here. That is the fourth axis, and")
+print("    neither this nor rho's row covers it today.")
+
 print("\n%s" % ("ALL PASS" if not fails else "FAILURES: %s" % fails))
 sys.exit(1 if fails else 0)

@@ -54,8 +54,49 @@ def grep_count(path, pattern, fixed=True):
     return int(out)
 
 
-def zero(label, path, pattern, probe_text, reach_pattern, fixed=True):
-    """Report `pattern` over `path`, with both controls, or refuse."""
+def high_water(path, state_dir):
+    """Largest size ever seen for `path`. An append-only subject must not shrink."""
+    key = os.path.join(state_dir, "hw-" + path.replace(os.sep, "_").lstrip("_"))
+    prev = None
+    if os.path.exists(key):
+        try:
+            prev = int(open(key).read().strip())
+        except Exception:
+            raise Fault("high-water mark at %s is unreadable -- that is not a zero" % key)
+    now = os.path.getsize(path)
+    if prev is not None and now < prev:
+        raise Fault("subject SHRANK: %d bytes now against a high water of %d -- "
+                    "rotated, truncated or replaced" % (now, prev))
+    with open(key, "w") as fh:
+        fh.write(str(max(now, prev or 0)))
+    return now, prev
+
+
+def zero(label, path, pattern, probe_text, reach_pattern, fixed=True,
+         witness=None, state_dir=None):
+    """Report `pattern` over `path`, with every control, or refuse.
+
+    THE THIRD AXIS, and it is rho's question in 3f2e681c-30d4-4477-b7cc-29cd1cc492b2:
+
+        "Does your reach arm assert the subject's IDENTITY or only its presence?
+         A path that exists and is readable can still be the wrong path."
+
+    It asserted presence. `reach_pattern` is characteristic of the CLASS -- `EXEC `
+    in a task-puller log -- so a different node's log, a rotated copy or a partial
+    fetch all satisfy it. The zero would then be true of the wrong subject.
+
+    So `witness` is a string that should occur in THIS subject and not in a
+    sibling of the same class, and `state_dir` enables a monotonic floor for an
+    append-only subject. They cover different failures:
+
+        WITNESS     the right CLASS of file, but the wrong INSTANCE
+        MONOTONIC   the right instance, ROTATED or TRUNCATED under you
+
+    Neither is sufficient and this cannot make them so: a tool cannot verify that
+    a witness actually identifies -- only the caller knows that. So the witness is
+    PRINTED, and whether it identifies is a judgement the reader gets to make
+    instead of one the instrument makes silently.
+    """
     try:
         # PROBE: can this pattern match anything at all?
         pr = subprocess.run(["grep", "-c"] + (["-F"] if fixed else []) + ["-i", pattern, "-"],
@@ -66,13 +107,24 @@ def zero(label, path, pattern, probe_text, reach_pattern, fixed=True):
         if grep_count(path, reach_pattern, fixed) < 1:
             raise Fault("REACH FAILED -- a pattern known to occur in the subject was "
                         "not found; the subject is missing, truncated or not what it should be")
+        # IDENTITY: the right class is not the right instance.
+        if witness is not None and grep_count(path, witness, True) < 1:
+            raise Fault("IDENTITY FAILED -- the witness %r is absent, so this is a "
+                        "file of the right KIND and not the one meant" % witness[:60])
+        grew = ""
+        if state_dir is not None:
+            now_b, prev_b = high_water(path, state_dir)
+            grew = " · floor ok (%d bytes, high water %s)" % (
+                now_b, "new" if prev_b is None else str(prev_b))
         n = grep_count(path, pattern, fixed)
     except Fault as e:
         print("  %-42s INSTRUMENT FAULT -- %s" % (label, e))
         return None
     size = os.path.getsize(path)
-    print("  %-42s %6d   [probe ok · reach ok · subject %s, %d bytes]"
-          % (label, n, os.path.basename(path), size))
+    ident = (" · identity ok, witness %r" % witness[:32]) if witness else \
+            " · IDENTITY NOT ASSERTED (class only)"
+    print("  %-42s %6d   [probe ok · reach ok%s%s · subject %s, %d bytes]"
+          % (label, n, ident, grew, os.path.basename(path), size))
     return n
 
 
