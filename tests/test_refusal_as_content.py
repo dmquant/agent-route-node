@@ -202,6 +202,25 @@ check("the original file is untouched", open(fp).read() == OPERATOR)
 check("the marker itself would publish normally (it is not a refusal)",
       F.refusal_envelope(mt) is None)
 
+print("\nLOCATOR CONTRADICTION — rho's class: the body is not the document")
+from app.workspace_sync import locator_contradiction as LC
+check("an error PAGE saved as .csv is flagged",
+      bool(LC("CPI.csv", '<!DOCTYPE html><html><head><title>Error - St. Louis Fed</title>')))
+check("a 503 page saved as .json is flagged",
+      bool(LC("d.json", '<html><head><title>503 Service Temporarily Unavailable</title>')))
+_n = LC("x.json", "<!DOCTYPE html><html><head>nothing</head>")
+check("a page with NO title still flags, and says so",
+      bool(_n) and "no title at all" in _n)
+check("the message tells the reader to treat the data as MISSING",
+      "MISSING" in (LC("a.csv", "<html><head>x</head>") or ""))
+
+print("\n  and the deliberate MISSES, which are ai-institute's over-block rule")
+check("real CSV is clean", LC("x.csv", "date,value\n2026-01,3.1\n") == "")
+check("real JSON is clean", LC("d.json", '{"rows":[1,2,3]}') == "")
+check("HTML in a .txt is NOT flagged (a scrape may be the point)",
+      LC("page.txt", "<!DOCTYPE html><html><head><title>Sina</title>") == "")
+check("HTML in a .md is NOT flagged", LC("n.md", "<!DOCTYPE html><html>") == "")
+
 print("\nthe marker must not break the sync when the workspace is read-only")
 ro = tempfile.mkdtemp()
 rofp = os.path.join(ro, "x.md")

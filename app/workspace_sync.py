@@ -130,6 +130,31 @@ async def _upload_file(client: httpx.AsyncClient, worker_url: str, api_key: str,
         # AND THE REFUSAL IS PRINTED WHERE THE SUCCESSES ARE PRINTED. A silent
         # skip is an absence nobody can inspect, which is the defect one layer
         # up from the one being fixed.
+        # A BODY THAT CONTRADICTS WHAT ITS NAME PROMISED.
+        #
+        # rho found 6 of 84 `.pdf` locators holding something else, and FIVE of
+        # the six declared nothing wrong at all -- a bot challenge, an app
+        # shell, two gzip WAF pages. No absence to detect and no false claim to
+        # catch: they are simply not the document. The only signal is the
+        # mismatch with the REQUEST, which no guard reading the body can see.
+        #
+        # Measured here after their question: 70 files across the two nodes are
+        # named .csv/.json/.txt and hold HTML. The sharpest pair is CPI.csv at
+        # 28,898 bytes on one node and THA.csv at 28,897 on the other -- the
+        # same upstream error page, fetched for two DIFFERENT series. A size
+        # rule passes 28 KB comfortably and the refusal detector cannot see it,
+        # because an error PAGE is not an error ENVELOPE.
+        #
+        # THIS MARKS AND DOES NOT REFUSE, which is the opposite of the refusal
+        # guard above, and the asymmetry is ai-institute's: a saved refusal is
+        # never the document, but a scraped HTML page saved as .txt may be
+        # exactly what the task wanted. 99,554 bytes of a Sina Finance filing
+        # sits in this population and is not a defect. Blocking it would
+        # destroy research to catch a naming mismatch.
+        mismatch = locator_contradiction(rel_path, content)
+        if mismatch:
+            print(f"[workspace-sync] ⚠ {session_id}/{rel_path}: {mismatch}")
+
         refusal = refusal_envelope(content)
         if refusal:
             print(f"[workspace-sync] REFUSED {session_id}/{rel_path}: {refusal}")
@@ -149,6 +174,37 @@ async def _upload_file(client: httpx.AsyncClient, worker_url: str, api_key: str,
     except Exception as e:
         print(f"[workspace-sync] Upload failed {session_id}/{rel_path}: {e}")
         return False
+
+
+# Extensions that promise a machine-readable shape. A mismatch here is worth
+# saying out loud; a mismatch on .md or .html is not, because prose and markup
+# legitimately contain anything.
+_PROMISES_DATA = (".csv", ".json", ".tsv", ".xml", ".yaml", ".yml")
+
+
+def locator_contradiction(rel_path: str, content: str) -> str:
+    """One line if the body contradicts what the filename promised, else "".
+
+    Deliberately narrow: only HTML found where a DATA extension was named. That
+    is the case with no benign reading -- nothing legitimately writes a web page
+    into a .csv -- and it is where the measured population sits.
+    """
+    ext = os.path.splitext(rel_path)[1].lower()
+    if ext not in _PROMISES_DATA:
+        return ""
+    head = content.lstrip()[:300].lower()
+    if not (head.startswith("<!doctype html") or head.startswith("<html")
+            or "<head>" in head):
+        return ""
+    import re as _re
+    m = _re.search(r"<title[^>]*>(.*?)</title>", content[:4000], _re.I | _re.S)
+    title = m.group(1).strip()[:80] if m else ""
+    return ("named %s but the bytes are an HTML PAGE (%d bytes%s). The fetch "
+            "returned a web page where data was expected -- do not parse this "
+            "as %s, and treat the data as MISSING."
+            % (ext, len(content),
+               ", titled %r" % title if title else ", no title at all",
+               ext.lstrip(".")))
 
 
 def _leave_refusal_marker(filepath: str, rel_path: str, refusal: str) -> None:
