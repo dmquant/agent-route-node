@@ -119,6 +119,30 @@ v, out = run("after truncation", subject, "not ready", "the server was not ready
 check("a shrunken subject is refused", v is None)
 check("and it names rotation or truncation", "SHRANK" in out, out[:90])
 
+print("\nDECLARED IDENTITY -- rho 21b7b3c7: a witness is for a subject that does not declare")
+st2 = os.path.join(d, "state2")
+os.makedirs(st2, exist_ok=True)
+subj2 = os.path.join(d, "pinned.txt")
+with open(subj2, "w") as fh:
+    fh.write("EXEC aaa | hand=codex\n")
+v, out = run("first sight pins dev:ino", subj2, "not ready", "the server was not ready",
+             "EXEC ", state_dir=st2)
+check("the inode pair is recorded and printed", v == 0 and "pinned dev:ino" in out, out[-70:])
+with open(subj2, "a") as fh:
+    fh.write("EXEC bbb | hand=agy\n")
+v, out = run("same file, grown", subj2, "not ready", "the server was not ready",
+             "EXEC ", state_dir=st2)
+check("growth on the same inode is fine", v == 0)
+# A ROTATION: the path now names a different file that is LARGER, so the size
+# floor alone would pass it. Only the inode catches this.
+os.remove(subj2)
+with open(subj2, "w") as fh:
+    fh.write("EXEC ccc | hand=codex\nEXEC ddd | hand=agy\nEXEC eee | hand=claude\n")
+v, out = run("rotated to a BIGGER file", subj2, "not ready", "the server was not ready",
+             "EXEC ", state_dir=st2)
+check("a rotation is refused even though it GREW", v is None)
+check("and it says DIFFERENT FILE, not SHRANK", "DIFFERENT FILE" in out, out[:95])
+
 print("\nKNOWN RESIDUAL, pinned rather than claimed closed:")
 print("  · a witness cannot be verified BY the tool -- only the caller knows")
 print("    whether it identifies, so it is printed and the judgement is the")

@@ -55,21 +55,41 @@ def grep_count(path, pattern, fixed=True):
 
 
 def high_water(path, state_dir):
-    """Largest size ever seen for `path`. An append-only subject must not shrink."""
+    """Largest size ever seen, AND the inode the subject occupied.
+
+    rho 21b7b3c7-dd88-444b-b7a0-eb5a48e7b59f marks where the witness limit stops
+    binding: it binds when identity must be INFERRED from content, and not when
+    the subject DECLARES it. Their subject is a table with a project_id column.
+
+    A file on a filesystem this process can reach declares its identity too, and
+    not in its contents: (st_dev, st_ino) is assigned by the filesystem, cannot be
+    forged by anything written INTO the file, and changes the moment the path is
+    rotated or replaced. This estate was inferring from content what the kernel
+    was willing to state.
+
+    So the pin is the pair, and size is the second arm rather than the first: a
+    rotated log gets a new inode even when it has grown past the old high water.
+    """
     key = os.path.join(state_dir, "hw-" + path.replace(os.sep, "_").lstrip("_"))
-    prev = None
+    prev_size = prev_id = None
     if os.path.exists(key):
         try:
-            prev = int(open(key).read().strip())
+            raw = open(key).read().strip().split()
+            prev_size = int(raw[0])
+            prev_id = raw[1] if len(raw) > 1 else None
         except Exception:
             raise Fault("high-water mark at %s is unreadable -- that is not a zero" % key)
-    now = os.path.getsize(path)
-    if prev is not None and now < prev:
+    st = os.stat(path)
+    now_id = "%d:%d" % (st.st_dev, st.st_ino)
+    if prev_id is not None and now_id != prev_id:
+        raise Fault("subject is a DIFFERENT FILE: dev:ino %s now against %s before -- "
+                    "rotated or replaced, whatever its size says" % (now_id, prev_id))
+    if prev_size is not None and st.st_size < prev_size:
         raise Fault("subject SHRANK: %d bytes now against a high water of %d -- "
-                    "rotated, truncated or replaced" % (now, prev))
+                    "truncated in place" % (st.st_size, prev_size))
     with open(key, "w") as fh:
-        fh.write(str(max(now, prev or 0)))
-    return now, prev
+        fh.write("%d %s" % (max(st.st_size, prev_size or 0), now_id))
+    return st.st_size, prev_size, now_id
 
 
 def zero(label, path, pattern, probe_text, reach_pattern, fixed=True,
@@ -96,6 +116,14 @@ def zero(label, path, pattern, probe_text, reach_pattern, fixed=True,
     a witness actually identifies -- only the caller knows that. So the witness is
     PRINTED, and whether it identifies is a judgement the reader gets to make
     instead of one the instrument makes silently.
+
+    AND A DECLARED IDENTITY IS NOT AUTOMATICALLY A DISTINCTIVE ONE. This estate's
+    own log declares `node=mac-local` on every start -- 57 of 57 on a host whose
+    name is sg01, because NODE_ID is a template default the node never changed.
+    Asserting that declaration would satisfy rho's rule and identify nothing. The
+    test a declaration has to pass is whether TWO INSTANCES OF THE CLASS COULD
+    CARRY THE SAME VALUE; where they could, it is a label and not an identity.
+    (st_dev, st_ino) passes that test and `node=mac-local` does not.
     """
     try:
         # PROBE: can this pattern match anything at all?
@@ -113,9 +141,9 @@ def zero(label, path, pattern, probe_text, reach_pattern, fixed=True,
                         "file of the right KIND and not the one meant" % witness[:60])
         grew = ""
         if state_dir is not None:
-            now_b, prev_b = high_water(path, state_dir)
-            grew = " · floor ok (%d bytes, high water %s)" % (
-                now_b, "new" if prev_b is None else str(prev_b))
+            now_b, prev_b, ino = high_water(path, state_dir)
+            grew = " · pinned dev:ino %s · floor ok (%d bytes, high water %s)" % (
+                ino, now_b, "new" if prev_b is None else str(prev_b))
         n = grep_count(path, pattern, fixed)
     except Fault as e:
         print("  %-42s INSTRUMENT FAULT -- %s" % (label, e))
