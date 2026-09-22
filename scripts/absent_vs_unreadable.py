@@ -124,6 +124,19 @@ def scan_defaults(src: str, path: str):
                     detail = "%s = %s" % (ast.unparse(node)[:60], empty)
                 except Exception:
                     detail = "... or %s" % empty
+        # A `None` DEFAULT IS THE CLEAN FORM AND MUST NOT COUNT.
+        #
+        # epistates 49b3a00d-2d6f-4b88-8447-1b99539b976c judged five wire sites and
+        # listed `?? null` among the forms that are not defects: absence propagates
+        # as absence and nothing downstream is fooled. The defect needs the default
+        # to be a legal value of a QUANTITY, which None is not.
+        #
+        # Measured when this exclusion was added: 267 hits before, 267 after. This
+        # tree happens to use no None-defaults at all, so the published figure is
+        # unaffected -- but the detector would have over-counted on a tree that did,
+        # and the probe in the test shows it fired on them until now.
+        if empty == "None":
+            continue
         if not empty:
             continue
         ln = getattr(node, "lineno", 0)
@@ -216,7 +229,32 @@ def e():
 '''
 
 
+_DEFAULT_SELF_TEST = """
+v1 = d.get("k", 0)          # fires -- a zero default
+v2 = x or []                # fires -- an empty-list default
+v3 = d.get("k")             # silent -- no default at all
+v4 = d.get("k", other)      # silent -- not a literal
+v5 = d.get("k", None)       # silent -- absence propagating as absence
+# ABSENT-OK: zero is a real last-synced time for a file never synced
+v6 = d.get("k", 0)          # silent -- reasoned opt-out
+"""
+
+
 def self_test() -> int:
+    # BOTH SCANS, because this printed PASS while scan_defaults was unexercised.
+    #
+    # The function that produced a published figure of 267 was not touched by the
+    # self-test that vouched for this file -- rho 687aa707's shape exactly: a check
+    # that ran and passed while the thing it exists to cover was not there.
+    _d = {d for _, _, d in scan_defaults(_DEFAULT_SELF_TEST, "<self-test>")}
+    _d_ok = (len(_d) == 2
+             and any("0" in x for x in _d) and any("[]" in x for x in _d))
+    print("default scan: 2 planted, 4 clean forms (no default, non-literal, None,")
+    print("              reasoned opt-out)")
+    print("  detected: %s" % sorted(_d))
+    print("  DEFAULT SCAN %s" % ("PASS" if _d_ok else "FAIL"))
+    print()
+
     high, low = scan_source(SELF_TEST, "<self-test>")
     hi = {d for _, _, d in high}
     ok = ("return {}" in hi and "x = []" in hi
@@ -228,8 +266,8 @@ def self_test() -> int:
     print("  LOW  detected: %s" % sorted({d for _, _, d in low}))
     print("  docstring mentioning the pattern flagged: %s"
           % ("YES — BROKEN" if any("compute" in d for d in hi) else "no"))
-    print("\nSELF-TEST %s" % ("PASS" if ok else "FAIL"))
-    return 0 if ok else 1
+    print("\nSELF-TEST %s" % ("PASS" if (ok and _d_ok) else "FAIL"))
+    return 0 if (ok and _d_ok) else 1
 
 
 def main() -> int:
