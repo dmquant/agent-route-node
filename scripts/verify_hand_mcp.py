@@ -961,11 +961,19 @@ def verify(hand: str, timeout: int, live: bool, server: str = "institute") -> in
 
     # VERIFIED REQUIRES A SERVED tools/call, not a connection.
     #
-    # tools/list needs no auth on this endpoint. That single fact is what put a
-    # wrong claim in STAGE1.md for eight days -- three header forms "all
-    # returned 200" because all three were measured against tools/list. A gate
-    # that certifies on a handshake repeats the error it was built after, and
-    # would certify codex, whose Bearer cannot call a tool at all.
+    # tools/list exercises no credential on the INSTITUTE endpoint -- the fact
+    # that put a wrong claim in STAGE1.md for eight days, when three header forms
+    # "all returned 200" because all three were measured against tools/list.
+    #
+    # Naming the endpoint, because this file tests either governed server and the
+    # sentence used to say "this endpoint" without saying which. Measured
+    # 2026-09-22 from sg01 against ros-gateway: real key -> 92 tools, garbage key
+    # -> 401, no key -> 401. tools/list there DOES require auth.
+    #
+    # The rule below does not depend on which: a handshake proves a connection,
+    # never an entitlement, and a gate that certifies on one repeats the error it
+    # was built after -- it would certify codex, whose Bearer cannot call a tool
+    # at all. The fact was endpoint-specific; the rule is not.
     #
     # So a hand that connects and lists but never calls is NOT certified. That
     # is not the same as broken, and the message says so.
