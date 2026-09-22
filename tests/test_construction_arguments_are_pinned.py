@@ -170,6 +170,23 @@ check("a write guarded by the WRONG condition is detected",
                                 for n in _g3),
       "guarded by something other than the upload result")
 
+print("\nWHICH ARM IS LOAD-BEARING, measured by mutation rather than assumed")
+print("  (rho 6da72250: a STRUCTURAL arm is needed when the invariant has no")
+print("   observable consequence -- and the two invariants here differ.)")
+print()
+print("  MUTATION A  `if not os.path.isdir(d): os.makedirs(...)`")
+print("     3 behavioural arms  GREEN   <- blind: the directory still comes back")
+print("     1 structural  arm   RED     <- the only witness")
+print("     => the structural predicate is the MECHANISM arm. Do not delete it")
+print("        because the behavioural ones look like they cover it.")
+print()
+print("  MUTATION B  the state write hoisted OUT of `if ok:`")
+print("     behavioural arm     RED     <- a failed upload now leaves an entry")
+print("     structural  arm     RED     <- and names the cause rather than the symptom")
+print("     => this invariant HAS an observable consequence, so the behavioural arm")
+print("        IS the claim. The structural one is redundant here and still earns")
+print("        its place by saying WHY, not just THAT.")
+
 print("\nWHY THIS FILE EXISTS, so a later reader does not delete it as trivia:")
 print("  · both invariants were published as CONCLUSIONS -- sg01 never provisioned,")
 print("    and a live cross-node mismatch leans safe. Neither was measured; both")
