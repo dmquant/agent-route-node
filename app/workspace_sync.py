@@ -216,21 +216,63 @@ def locator_contradiction(rel_path: str, content: str, byte_size: int = -1) -> s
     # was not measured in. The caller has the decoded string and cannot recover
     # the byte count from it, so the honest fix is to NAME the unit correctly
     # rather than to guess at bytes.
+    # THE DETECTION WAS A VOCABULARY, AND REAL PAGES DO NOT CARRY IT.
+    #
+    # It asked for `<!doctype html`, `<html` or `<head>`. Measured 2026-09-22
+    # against the operator's own failing task on sg01: `aapl.csv` and
+    # `market.csv` each hold 271 bytes of a Stooq error page that begins
+    # `<meta charset=utf-8><title>Stooq</title><center ...` -- no doctype, no
+    # html element, no head. The guard flagged 1 of 3 real contradictions in
+    # that directory and missed two, because three literals are a vocabulary
+    # sitting in the path that decides what the structural part is applied to.
+    #
+    # The structural question is not "does this look like HTML" -- that needs a
+    # list of tags and will always be incomplete -- it is "does this fail to be
+    # the type its own name promises", which is a PARSE.
+    #
+    #   .json            must parse as JSON
+    #   .csv .tsv        a data row never begins with `<`
+    #   .yaml .yml       neither does a YAML document
+    #   .xml             legitimately begins with `<`, so the cheap test is
+    #                    unavailable and the tag vocabulary stays there, DECLARED
+    #                    incomplete rather than presented as structural
+    #
+    # DIRECTION: this MARKS and never refuses, so its failures cost a reader one
+    # look. A truncated but genuine .json now marks too -- that file is unusable
+    # as JSON either way, so it is a true positive of a neighbouring kind rather
+    # than a false one.
     ext = os.path.splitext(rel_path)[1].lower()
     if ext not in _PROMISES_DATA:
         return ""
-    head = content.lstrip()[:300].lower()
-    if not (head.startswith("<!doctype html") or head.startswith("<html")
-            or "<head>" in head):
+    body = content.lstrip()
+    if not body:
         return ""
     import re as _re
+    if ext == ".json":
+        try:
+            json.loads(content)
+            return ""
+        except Exception:
+            reason = "does not parse as JSON"
+    elif ext == ".xml":
+        head = body[:300].lower()
+        if not (head.startswith("<!doctype html") or head.startswith("<html")
+                or "<head>" in head):
+            return ""
+        reason = "carries HTML page markers"
+    else:
+        if not body.startswith("<"):
+            return ""
+        reason = "begins with markup, not data"
     m = _re.search(r"<title[^>]*>(.*?)</title>", content[:4000], _re.I | _re.S)
     title = m.group(1).strip()[:80] if m else ""
+    kind = "an HTML PAGE" if (title or body[:300].lower().lstrip().startswith("<"))\
+        else "NOT THE DECLARED TYPE"
     size = ("%d bytes" % byte_size) if byte_size >= 0 else ("%d chars" % len(content))
-    return ("named %s but the bytes are an HTML PAGE (%s%s). The fetch "
-            "returned a web page where data was expected -- do not parse this "
-            "as %s, and treat the data as MISSING."
-            % (ext, size,
+    return ("named %s but the bytes are %s -- it %s (%s%s). The fetch returned "
+            "a page where data was expected: do not parse this as %s, and treat "
+            "the data as MISSING."
+            % (rel_path, kind, reason, size,
                ", titled %r" % title if title else ", no title at all",
                ext.lstrip(".")))
 

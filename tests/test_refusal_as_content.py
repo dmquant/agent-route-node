@@ -232,6 +232,27 @@ check("a multi-byte page reports the BYTE count, not the char count",
       "bytes" in (LC("a.csv", "<html><head>\u8fd4\u56de</head>", byte_size=99) or "")
       and "chars" not in (LC("a.csv", "<html><head>\u8fd4\u56de</head>", byte_size=99) or ""))
 
+print("\n  REAL BODIES from the operator's failing task on sg01, 2026-09-22")
+# The detection used to be a vocabulary -- `<!doctype html`, `<html`, `<head>`.
+# Measured against that session directory it flagged 1 of 3 real contradictions.
+# These four are the exact bytes, and the Stooq page is why: it carries none of
+# the three markers.
+STOOQ = ("<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;"
+         "margin-top:50px><p><a href=/><img src=//static.stooq.com/stooq.svg height=68>"
+         "</a><p style=font-size:x-large>The page you requested does not exist<br>"
+         "or has been moved<p><small><a href=/>Main Page</a>")
+DENIED = "<HTML><HEAD>\n<TITLE>Access Denied</TITLE>\n</HEAD><BODY>\n<H1>Access Denied</H1>"
+check("a Stooq error page in a .csv is flagged (NO doctype, NO <html>, NO <head>)",
+      "HTML PAGE" in (LC("aapl.csv", STOOQ, byte_size=271) or ""))
+check("the same page under market.csv is flagged",
+      "HTML PAGE" in (LC("market.csv", STOOQ, byte_size=271) or ""))
+check("an Access Denied page in a .json is flagged",
+      "does not parse as JSON" in (LC("cnbc_aapl.json", DENIED, byte_size=420) or ""))
+check("a 23-byte plain-text refusal in a .json is flagged, and NOT called HTML",
+      "NOT THE DECLARED TYPE" in (LC("spx.json", "Edge: Too Many Requests", byte_size=23) or ""))
+check("valid JSON carrying a NESTED failure is NOT this guard's business",
+      LC("nasdaq_SPX.json", '{"data":null,"status":{"rCode":400}}', byte_size=142) == "")
+
 print("\n  and the deliberate MISSES, which are ai-institute's over-block rule")
 check("real CSV is clean", LC("x.csv", "date,value\n2026-01,3.1\n") == "")
 check("real JSON is clean", LC("d.json", '{"rows":[1,2,3]}') == "")
