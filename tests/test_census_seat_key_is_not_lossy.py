@@ -106,5 +106,50 @@ class TestTheSeatKeyIsNotLossy(unittest.TestCase):
         self.assertEqual(len(_gc._key_digest(h)), 64)
 
 
+class TestTheCorrespondenceSeparatesItsConfidenceClasses(unittest.TestCase):
+    """The SECOND lossy comparison key in this file, found by rho's triage rule.
+
+    LFAB-113 audited by grepping for slice syntax. `_norm(n) = n.rsplit("__",1)[-1]`
+    is not a slice and the grep missed it -- the audit's own pattern was a
+    vocabulary, which is the defect the audit was looking for.
+
+    Forced, as rho dab93731 and epistates 67fb6308 both insist: ONE candidate on
+    each side, different namespaces --
+
+        prev seat  alpha__report        now seat  beta__report
+        BEFORE     "matched  1", no flag. Different tools, paired confidently.
+
+    The matching is not the defect: seats namespace differently and suffix-matching
+    is the whole point. Two confidence classes sharing one line was.
+    """
+
+    def _cross_seat(self, prev_tools, now_tools):
+        return _report(_cap("e" * 64, "bbbbbbbbbbbb", now_tools, seat="B"),
+                       _cap("d" * 64, "aaaaaaaaaaaa", prev_tools, seat="A"))
+
+    def test_a_cross_namespace_pair_is_flagged_as_resting_on_the_basis(self):
+        out = self._cross_seat(["alpha__report"], ["beta__report"])
+        self.assertIn("1 where the namespaces DIFFER", out)
+        self.assertIn("rest ENTIRELY on the basis", out)
+        self.assertIn("alpha__report  <->  beta__report", out)
+
+    def test_a_same_namespace_pair_is_NOT_flagged(self):
+        """The control. A guard that flagged every match would be useless."""
+        out = self._cross_seat(["inst__report"], ["inst__report"])
+        self.assertIn("1 with the SAME namespace", out)
+        self.assertNotIn("rest ENTIRELY on the basis", out)
+
+    def test_the_total_still_counts_both_classes(self):
+        out = self._cross_seat(["inst__a", "alpha__b"], ["inst__a", "beta__b"])
+        self.assertIn("matched      2", out)
+        self.assertIn("(1 with the SAME namespace, 1 where the namespaces DIFFER)", out)
+
+    def test_an_ambiguous_suffix_still_fails_CLOSED_naming_both(self):
+        """This arm already failed closed before the change and must keep doing so."""
+        out = self._cross_seat(["alpha__report"], ["beta__report", "gamma__report"])
+        self.assertIn("AMBIGUOUS", out)
+        self.assertIn("beta__report, gamma__report", out)
+
+
 if __name__ == "__main__":
     unittest.main()

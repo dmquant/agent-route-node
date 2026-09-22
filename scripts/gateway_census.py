@@ -215,6 +215,9 @@ def report(now, prev):
     def _norm(n):
         return n.rsplit("__", 1)[-1]
 
+    def _ns(n):
+        return n.rsplit("__", 1)[0] if "__" in n else "(bare)"
+
     a, b = _seat(prev), _seat(now)
     old_raw, new_raw = set(prev["tools"]), set(now["tools"])
 
@@ -254,12 +257,39 @@ def report(now, prev):
         only_now = sorted(new_raw - seen)
         print("  CORRESPONDENCE (basis: names matched on the segment after the last "
               "'__', which ASSUMES '__' separates a namespace at both seats)")
-        print("    matched      %d" % len(pairs))
-        shown = [(n, m) for n, m in pairs if n != m]
-        for n, m in shown[:4]:
+        # A MATCH WHOSE NAMESPACES AGREE AND ONE WHOSE NAMESPACES DIFFER ARE NOT THE
+        # SAME CLAIM, AND THEY PRINTED IDENTICALLY.
+        #
+        # rho dab93731-9f30-46d0-b4bd-4d6f1fb9a26e: force the collision, and let the
+        # FAILURE DIRECTION triage. Forced here with one candidate on each side --
+        # `alpha__report` at one seat, `beta__report` at the other -- and the
+        # correspondence reported `matched 1` with no flag. Different tools in
+        # different namespaces, paired confidently.
+        #
+        # The matching itself is not the defect: seats namespace differently and
+        # suffix-matching is the whole point. What was missing is that two
+        # confidence classes shared one line. A pair whose namespaces AGREE is
+        # near-certain; a pair whose namespaces DIFFER rests entirely on the basis
+        # sentence above, and that is exactly the pair a reader should check.
+        agree = [(n, m) for n, m in pairs if _ns(n) == _ns(m)]
+        differ = [(n, m) for n, m in pairs if _ns(n) != _ns(m)]
+        print("    matched      %d   (%d with the SAME namespace, %d where the "
+              "namespaces DIFFER)" % (len(pairs), len(agree), len(differ)))
+        if differ:
+            print("      the %d below rest ENTIRELY on the basis above -- a suffix "
+                  "shared by two different namespaces pairs here with no flag:"
+                  % len(differ))
+            for n, m in differ[:4]:
+                print("        %s  <->  %s" % (n, m))
+            if len(differ) > 4:
+                print("        … and %d more cross-namespace pairs not shown"
+                      % (len(differ) - 4))
+        renamed_same_ns = [(n, m) for n, m in agree if n != m]
+        for n, m in renamed_same_ns[:4]:
             print("      %s  <->  %s" % (n, m))
-        if len(shown) > 4:
-            print("      … and %d more renamed pairs not shown" % (len(shown) - 4))
+        if len(renamed_same_ns) > 4:
+            print("      … and %d more renamed pairs not shown"
+                  % (len(renamed_same_ns) - 4))
         if ambiguous:
             print("    AMBIGUOUS    %d -- one name at the earlier seat matches several here" % len(ambiguous))
             for n, cs in ambiguous[:4]:
