@@ -224,8 +224,13 @@ check("a page with NO title still flags, and says so",
       bool(_n) and "no title at all" in _n)
 check("the message tells the reader to treat the data as MISSING",
       "MISSING" in (LC("a.csv", "<html><head>x</head>") or ""))
-check("the locator message also says CHARS rather than bytes",
+check("the locator message says CHARS when no byte count is given",
       "chars" in (LC("a.csv", "<html><head>x</head>") or ""))
+check("and says BYTES when the caller measured the file",
+      "28936 bytes" in (LC("a.csv", "<html><head>x</head>", byte_size=28936) or ""))
+check("a multi-byte page reports the BYTE count, not the char count",
+      "bytes" in (LC("a.csv", "<html><head>\u8fd4\u56de</head>", byte_size=99) or "")
+      and "chars" not in (LC("a.csv", "<html><head>\u8fd4\u56de</head>", byte_size=99) or ""))
 
 print("\n  and the deliberate MISSES, which are ai-institute's over-block rule")
 check("real CSV is clean", LC("x.csv", "date,value\n2026-01,3.1\n") == "")

@@ -108,7 +108,21 @@ def sweep(root: str):
             eligible += 1
             why = refusal_envelope(content)
             if why:
-                hits.append((p, len(content), why))
+                # THE BYTE COUNT, NOT len() OF A DECODED STRING.
+                #
+                # This sweep published CPI.csv as "28,898 bytes" when the file
+                # is 28,936 -- len() after decoding counts CHARACTERS, and the
+                # page carries multi-byte UTF-8. Worse, two files measured with
+                # the same broken instrument came out one apart, and that
+                # difference became the centrepiece of a finding.
+                #
+                # We have the path, so we can stat it. A char count is a fact
+                # about the decoder; a byte count is a fact about the file.
+                try:
+                    nbytes = os.path.getsize(p)
+                except OSError:
+                    nbytes = -1
+                hits.append((p, nbytes, why))
     return walked, eligible, hits
 
 
@@ -134,7 +148,7 @@ def main() -> int:
         if not walked:
             empty_roots.append(root)
         for p, n, why in hits:
-            print("    %s  (%d bytes)" % (p, n))
+            print("    %s  (%s)" % (p, "%d bytes" % n if n >= 0 else "size unreadable"))
             print("        %s" % why[:200])
 
     print()

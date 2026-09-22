@@ -151,7 +151,7 @@ async def _upload_file(client: httpx.AsyncClient, worker_url: str, api_key: str,
         # exactly what the task wanted. 99,554 bytes of a Sina Finance filing
         # sits in this population and is not a defect. Blocking it would
         # destroy research to catch a naming mismatch.
-        mismatch = locator_contradiction(rel_path, content)
+        mismatch = locator_contradiction(rel_path, content, byte_size=file_size)
         if mismatch:
             print(f"[workspace-sync] ⚠ {session_id}/{rel_path}: {mismatch}")
 
@@ -182,14 +182,28 @@ async def _upload_file(client: httpx.AsyncClient, worker_url: str, api_key: str,
 _PROMISES_DATA = (".csv", ".json", ".tsv", ".xml", ".yaml", ".yml")
 
 
-def locator_contradiction(rel_path: str, content: str) -> str:
+def locator_contradiction(rel_path: str, content: str, byte_size: int = -1) -> str:
     """One line if the body contradicts what the filename promised, else "".
 
     Deliberately narrow: only HTML found where a DATA extension was named. That
     is the case with no benign reading -- nothing legitimately writes a web page
     into a .csv -- and it is where the measured population sits.
     """
-    # SIZES HERE ARE CHARACTERS, NOT BYTES, AND THE MESSAGE SAYS SO.
+    # MEASURE THE BYTES WHEN THE CALLER HAS THEM; SAY CHARS WHEN IT DOES NOT.
+    #
+    # Renaming the unit was the weaker half of the fix. rho's prescription for
+    # this class is the stronger one: a mis-named UNIT is caught by re-deriving
+    # from a stored quantity, but a mis-MEASURED quantity can only be caught by
+    # re-measuring from the SOURCE ARTIFACT -- and they showed no tolerance
+    # separates my 0.13% error from ordinary rounding at 3.45%, so no check over
+    # text can ever find it.
+    #
+    # _upload_file holds the PATH, so it can stat the file and pass the real
+    # byte count. When it does, this says bytes and means bytes. When a caller
+    # has only a decoded string the count is characters and the message says so,
+    # because the byte count is unrecoverable from a str.
+    #
+    # SIZES HERE ARE CHARACTERS UNLESS byte_size IS GIVEN, AND THE MESSAGE SAYS WHICH.
     #
     # `content` is already decoded, so len() counts CHARACTERS. Measured
     # 2026-09-22: I published CPI.csv at "28,898 bytes" when the file is 28,936
@@ -212,10 +226,11 @@ def locator_contradiction(rel_path: str, content: str) -> str:
     import re as _re
     m = _re.search(r"<title[^>]*>(.*?)</title>", content[:4000], _re.I | _re.S)
     title = m.group(1).strip()[:80] if m else ""
-    return ("named %s but the bytes are an HTML PAGE (%d chars%s). The fetch "
+    size = ("%d bytes" % byte_size) if byte_size >= 0 else ("%d chars" % len(content))
+    return ("named %s but the bytes are an HTML PAGE (%s%s). The fetch "
             "returned a web page where data was expected -- do not parse this "
             "as %s, and treat the data as MISSING."
-            % (ext, len(content),
+            % (ext, size,
                ", titled %r" % title if title else ", no title at all",
                ext.lstrip(".")))
 
