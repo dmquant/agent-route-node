@@ -55,7 +55,7 @@ with open(os.path.join(root, "ignored.bin"), "w") as fh:
     fh.write(REFUSAL)                      # wrong extension -- correctly invisible
 
 print("the readable population")
-walked, eligible, hits, unreadable = sw.sweep(root)
+walked, eligible, hits, unreadable, _skipped = sw.sweep(root)
 check("both .md files walked", walked == 2, str(walked))
 check("both eligible", eligible == 2, str(eligible))
 check("the refusal is a hit", len(hits) == 1, str(len(hits)))
@@ -68,7 +68,7 @@ with open(secret, "w") as fh:
     fh.write(REFUSAL)                      # a refusal that cannot be read
 os.chmod(secret, 0)
 try:
-    walked2, eligible2, hits2, unreadable2 = sw.sweep(root)
+    walked2, eligible2, hits2, unreadable2, _skipped2 = sw.sweep(root)
 finally:
     os.chmod(secret, stat.S_IRUSR | stat.S_IWUSR)
 if os.geteuid() == 0:

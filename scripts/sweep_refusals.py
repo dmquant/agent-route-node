@@ -110,12 +110,36 @@ def sweep(root: str):
     # 96,809 on gubei12. LATENT -- and epistates 524d9763 is right that latency is
     # a property of today's DATA and not of the code, so it is counted and reported
     # rather than trusted to stay zero.
+    # THE EXTENSION FILTER DROPS ROWS INTO NO DENOMINATOR AT ALL, AND THIS FILE
+    # ALREADY FIXED THAT ONCE FOR A DIFFERENT EXCLUSION.
+    #
+    # ec35293 made an UNREADABLE file visible because rho's backwards walk showed
+    # the published 1,304 could not see one. The extension filter above it was left
+    # alone. Forced 2026-09-23, one identical refusal envelope written under 18
+    # real-world extensions:
+    #
+    #   18 written · 9 found · 9 dropped, and `walked` read 9 -- so the nine were in
+    #   NO denominator and the output said nothing about them
+    #   missing: .jsonl .ndjson .yml.bak .out .result .response .err .tmp .data
+    #
+    # agora-pm b4ce12a4-2844-45f2-8ac3-8644d59b6f0a predicted the direction: a lossy
+    # predicate collides toward the permissive branch, and here the permissive
+    # branch is "not our kind of file, skip". `.err`, `.out`, `.result` and
+    # `.response` are what a saved refusal is actually called.
+    #
+    # NOT fixed by widening EXT. That is the vocabulary trap this estate has shipped
+    # eight times -- a longer list is still a list of what its author thought of.
+    # Fixed by COUNTING the exclusion and naming its extensions, so the zero this
+    # sweep publishes carries the population it could not see.
     walked, eligible, unreadable, hits = 0, 0, [], []
+    skipped_ext = {}
     for dirpath, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in SKIP]
         for f in files:
             p = os.path.join(dirpath, f)
-            if os.path.splitext(f)[1].lower() not in EXT:
+            ext = os.path.splitext(f)[1].lower()
+            if ext not in EXT:
+                skipped_ext[ext or "(no extension)"] = skipped_ext.get(ext or "(no extension)", 0) + 1
                 continue
             try:
                 if os.path.getsize(p) > MAX:
@@ -146,7 +170,7 @@ def sweep(root: str):
                 except OSError:
                     nbytes = -1
                 hits.append((p, nbytes, why))
-    return walked, eligible, hits, unreadable
+    return walked, eligible, hits, unreadable, skipped_ext
 
 
 def main() -> int:
@@ -158,12 +182,15 @@ def main() -> int:
 
     total_examined, total_walked, total_hits, empty_roots = 0, 0, 0, []
     total_unreadable = 0
+    total_skipped = {}
     for root in roots:
         if not os.path.isdir(root):
             print("%-40s NOT A DIRECTORY — nothing was examined here" % root)
             empty_roots.append(root)
             continue
-        walked, eligible, hits, unreadable = sweep(root)
+        walked, eligible, hits, unreadable, skipped = sweep(root)
+        for e, n in skipped.items():
+            total_skipped[e] = total_skipped.get(e, 0) + n
         total_unreadable += len(unreadable)
         total_examined += eligible
         total_walked += walked
@@ -181,6 +208,16 @@ def main() -> int:
             print("        %s" % why[:200])
 
     print()
+    if total_skipped:
+        n = sum(total_skipped.values())
+        top = sorted(total_skipped.items(), key=lambda kv: -kv[1])
+        print("⚠ %d FILE(S) WERE SKIPPED BY EXTENSION and are in NO denominator" % n)
+        print("  below -- not walked, not eligible, not hits. A saved refusal in one")
+        print("  of them is invisible to every figure in this run.")
+        print("  %s%s" % (", ".join("%s×%d" % (e, c) for e, c in top[:8]),
+                          "" if len(top) <= 8 else
+                          " … and %d more extensions not shown" % (len(top) - 8)))
+        print()
     if total_unreadable:
         # The claim this sweep is cited for is "all published, ZERO AT REST".
         # A file that could not be read might have been a refusal at rest, so the
