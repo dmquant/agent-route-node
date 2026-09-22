@@ -237,6 +237,165 @@ def scan_ordering_defaults(src: str, path: str):
     return out
 
 
+# A dict accumulates too, and not with a verb this scan first knew. The repair to
+# retraction_audit -- `_unreadable.setdefault(path, kind)` -- kept firing as a
+# dropped row because the verb list was append/add/extend/update. A vocabulary of
+# literals inside the path that decides what the structural test applies TO is the
+# recurring defect in this estate's detectors; this one is still a vocabulary, so
+# it is named here and kept short rather than hidden in a condition.
+_ACCUM_VERBS = ("append", "add", "extend", "update", "setdefault", "insert", "put")
+
+
+def scan_dropped_rows(src: str, path: str):
+    """A handler inside a LOOP that leaves the iteration WITHOUT touching any accumulator.
+
+    rho 445121ed-3953-4863-b068-288120ae29ca asks the right question: they found
+    this form with a regex for `except ...: continue|break|pass`, which only reaches
+    it when the handler body is a single bare statement -- "a handler that logs and
+    then continues, or that appends to an error list nobody prints, is the same
+    defect and my pattern misses both. Is there a structural form of it at all, or
+    does this one need the backwards walk from published figures every time?"
+
+    There is one, and it is not about the handler's BODY. It is about whether the
+    handler contributes to what the loop COUNTS. The defect is not `continue`; the
+    defect is leaving an iteration that would have incremented something, without
+    incrementing anything -- so the row vanishes from every denominator the loop
+    builds, and the shape of the statement that leaves is irrelevant.
+
+    So: collect the loop's accumulators (`x += ...`, `xs.append(...)`), then ask of
+    each handler inside it whether it touches one. A handler that logs and continues
+    touches none and is caught; a handler that increments an `unreadable` counter
+    touches one and is not, which is exactly the repair this estate shipped in
+    sweep_refusals after the 1,304.
+
+    SECOND ARM, for rho's other case: a handler that appends to a name which is
+    never LOADED anywhere in the module. Collected and never read is the same
+    absence wearing a record's clothes.
+
+    NOT DECIDABLE HERE, and not claimed: whether an accumulator that IS read is
+    read by a consumer who acts on it. `except: errs.append(e)` followed by a print
+    nobody looks at is outside this and outside any scan.
+    """
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return []
+    lines = src.splitlines()
+    # An ACCUMULATE is not a READ. `errs.append(e)` puts `errs` in Load context, so
+    # a naive load-set makes every collected-and-never-read list look read -- which
+    # silenced rho's second case on the first draft of this scan.
+    _accum_receivers = {id(n.func.value) for n in ast.walk(tree)
+                        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                        and n.func.attr in _ACCUM_VERBS
+                        and isinstance(n.func.value, ast.Name)}
+    loaded = {n.id for n in ast.walk(tree)
+              if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+              and id(n) not in _accum_receivers}
+    # `continue` BINDS TO THE INNERMOST LOOP, so a handler inside two nested loops
+    # is ONE site, not two. The first run reported 13 and held 9 distinct lines:
+    # ast.walk visits the outer loop and the inner one, and the handler is inside
+    # both. A detector that double-counts its own hits is the same species of
+    # arithmetic error as a denominator that drops rows, one level up.
+    parent = {}
+    for n in ast.walk(tree):
+        for c in ast.iter_child_nodes(n):
+            parent[id(c)] = n
+
+    def _innermost_loop(node):
+        cur = parent.get(id(node))
+        while cur is not None:
+            if isinstance(cur, (ast.For, ast.While)):
+                return cur
+            if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                return None          # control cannot `continue` across a def
+            cur = parent.get(id(cur))
+        return None
+
+    out, _seen = [], set()
+    for handler in ast.walk(tree):
+        if not isinstance(handler, ast.ExceptHandler):
+            continue
+        loop = _innermost_loop(handler)
+        if loop is None:
+            continue
+        accum = set()
+        for n in ast.walk(loop):
+            if isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name):
+                accum.add(n.target.id)
+            elif isinstance(n, ast.Assign):
+                for t in n.targets:
+                    if isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name):
+                        accum.add(t.value.id)   # d[k] = v
+            elif (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr in _ACCUM_VERBS
+                    and isinstance(n.func.value, ast.Name)):
+                accum.add(n.func.value.id)
+        if not accum:
+            continue                      # the loop counts nothing; nothing to drop
+        for h in (handler,):
+            ln = getattr(h, "lineno", 0)
+            if (path, ln) in _seen:
+                continue
+            _seen.add((path, ln))
+            # The opt-out is written above the TRY, which is several lines above
+            # the handler -- a 3-line window found it for an assignment and not here.
+            window = "\n".join(lines[max(0, ln - 8):ln + 1])
+            if "ABSENT-OK:" in window:
+                continue
+            touched = set()
+            for n in ast.walk(h):
+                if isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name):
+                    touched.add(n.target.id)
+                elif isinstance(n, ast.Assign):
+                    for t in n.targets:
+                        if isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name):
+                            touched.add(t.value.id)
+                elif (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                        and n.func.attr in _ACCUM_VERBS
+                        and isinstance(n.func.value, ast.Name)):
+                    touched.add(n.func.value.id)
+            # A HANDLER THAT FALLS THROUGH STILL REACHES THE ACCUMULATOR.
+            #
+            # The first run of this scan reported 41 sites, and the first two it
+            # was shown -- `except OSError: nbytes = -1` in sweep_refusals, and
+            # `except Exception: detail = "?"` in this very file -- both fall
+            # through to an `append` on the next line. The row is not dropped; a
+            # sentinel is set and the iteration continues.
+            #
+            # So the defect needs the handler to LEAVE the iteration. Judged before
+            # counted, which is the move this room keeps rewarding: `41` would have
+            # been a shape count presented as a finding.
+            # AND `return`/`raise` ARE NOT THIS DEFECT, which judging the hits showed.
+            #
+            # The run that flagged them named task_puller's `except CancelledError:
+            # return` and institute_files' `return [], "line %d is not JSON"`. Both
+            # leave the iteration and touch no accumulator, and neither is silent:
+            #
+            #   continue / break   the loop RUNS TO COMPLETION and its accumulator is
+            #                      published minus that row -> the row is gone and the
+            #                      figure still presents as whole.   THE DEFECT.
+            #   return / raise     the accumulator is ABANDONED; the caller gets an
+            #                      error, or a value the callee chose. The failure is
+            #                      handed up rather than absorbed.   NOT THIS.
+            #
+            # The defect needs a SURVIVING FIGURE to hide in. That is the same clause
+            # epistates and rho converged on for the default-literal class -- the
+            # default has to reach a published figure -- arriving from the other side.
+            exits = h.body and isinstance(h.body[-1], (ast.Continue, ast.Break))
+            if not touched and exits:
+                out.append((ln, "DROPS THE ROW",
+                            "%s and touches none of %s"
+                            % (type(h.body[-1]).__name__.lower(),
+                               ", ".join(sorted(accum))[:50])))
+            elif touched:
+                dead = [t for t in touched if t not in loaded]
+                if dead:
+                    out.append((ln, "COLLECTED, NEVER READ",
+                                "appends to %s, which is never loaded in this module"
+                                % ", ".join(sorted(dead))))
+    return out
+
+
 def scan_source(src: str, path: str):
     """(high, low) findings. Each is (line, handler_repr, detail)."""
     try:
@@ -379,11 +538,20 @@ def main() -> int:
             files += [os.path.join(dp, f) for f in fs if f.endswith(".py")]
 
     total_h = total_l = 0
+    unreadable = []
     for p in sorted(files):
         try:
             src = open(p, errors="replace").read()
-        except Exception:
-            print("%s: COULD NOT READ — which is this whole class, in the scanner" % p)
+        except Exception as e:
+            # PRINTING IT IS NOT COUNTING IT. This branch announced the file and
+            # then left the iteration touching neither total, so `files=N` and the
+            # shape counts below disagreed about the population by exactly the
+            # number of files nobody could open -- and the summary said `files=N`
+            # as though all N had been scanned. Caught by this file's own
+            # scan_dropped_rows.
+            unreadable.append((p, type(e).__name__))
+            print("%s: COULD NOT READ (%s) — which is this whole class, in the scanner"
+                  % (p, type(e).__name__))
             continue
         high, low = scan_source(src, p)
         total_h += len(high)
@@ -393,7 +561,11 @@ def main() -> int:
         for ln, caught, detail in low:
             print("shape-low  %s:%d  except %s -> %s" % (p, ln, caught, detail))
 
-    print("\nfiles=%d  SHAPES(high)=%d  shapes(low)=%d" % (len(files), total_h, total_l))
+    print("\nfiles listed=%d  SCANNED=%d  UNREADABLE=%d  SHAPES(high)=%d  shapes(low)=%d"
+          % (len(files), len(files) - len(unreadable), len(unreadable), total_h, total_l))
+    if unreadable:
+        print("⚠ %d file(s) were listed and never scanned; a shape in them is not in"
+              " the counts above." % len(unreadable))
     print("THESE ARE SHAPE COUNTS, NOT DEFECT COUNTS. Classify by consequence")
     print("before quoting them: on this repo 31 shapes were 2 defects, and on")
     print("another estate 10 shapes were 1.")

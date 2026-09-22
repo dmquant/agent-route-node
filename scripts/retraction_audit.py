@@ -150,6 +150,7 @@ print("pattern control: %d of %d patterns match their own example" % (len(CLAIMS
 print()
 total_hits = 0
 total_review = 0
+_unreadable = {}
 suppressed_by = {}
 for label, corrected_to, pat, probe in CLAIMS:
     rx = re.compile(pat, re.I)
@@ -157,7 +158,14 @@ for label, corrected_to, pat, probe in CLAIMS:
     for path in targets:
         try:
             lines = open(path, errors="replace").read().splitlines()
-        except Exception:
+        except Exception as _e:
+            # THE AUDIT'S OWN DENOMINATOR DROPPED ROWS. Found by
+            # scan_dropped_rows, which was built to answer rho 445121ed and then
+            # pointed at this estate: a target that could not be opened left this
+            # loop touching none of hits/review/raw_matches, so it was absent from
+            # `files searched` and from `TOTAL unmarked assertions: 0` alike.
+            # The file whose job is checking claims was making an uninspectable one.
+            _unreadable.setdefault(path, type(_e).__name__)
             continue
         for i, line in enumerate(lines):
             if not rx.search(line):
@@ -208,6 +216,15 @@ for label, corrected_to, pat, probe in CLAIMS:
     for p, n, l, w in review[:6]:
         print("      REVIEW  %s:%d  [exempted only by %r] %s" % (p, n, w, l))
 print()
+if _unreadable:
+    print("⚠ %d TARGET(S) COULD NOT BE READ -- neither hit nor miss, never examined:"
+          % len(_unreadable))
+    for _p, _k in sorted(_unreadable.items()):
+        print("    %s  (%s)" % (_p, _k))
+    print("  Any unmarked assertion in them is invisible to the total below.")
+else:
+    print("every target was read: %d of %d -- the total below has a full denominator"
+          % (len(targets), len(targets)))
 print("TOTAL unmarked assertions: %d   REVIEW (weak exemption only): %d" % (total_hits, total_review))
 # An exemption nobody can see is the defect this repo keeps finding in other
 # people's instruments. Print what was suppressed and on whose authority.
