@@ -98,7 +98,26 @@ async def _execute_one(task: dict, worker_url: str, auth_key: str) -> None:
     sem = _ensure_sem()
     async with sem:
         start_time = datetime.now()
-        _logger.info(f"EXEC {task_id[:12]} | hand={hand_name} | model={requested_model or '(default)'} | prompt={prompt[:80]}...")
+        # THE EXEC LINE IDENTIFIED A TASK BY THE FIRST 80 CHARACTERS OF ITS PROMPT,
+        # AND FOR A WORKFLOW STEP THOSE 80 CHARACTERS ARE BOILERPLATE.
+        #
+        # ai-institute b7cedc89-e60f-46e8-8c7f-9a76d9d3d428 asked this node for a
+        # second clock on one dispatch, because a three-seat refutation rests on a
+        # single institute timestamp. This log could not supply one. Measured on
+        # sg01 for 2026-09-22: 403 EXEC lines, of which 82 carry no bracket tag at
+        # all -- 47 reading `# Step -1 - Anchor today's date BEFORE you start` and
+        # 35 reading `# Previous Steps Context`, one identical label each.
+        #
+        # rho 5cad52c6-f29c-44cd-9cd9-9ff8460820e0 is the rule this breaks: a
+        # declaration identifies when the layer that OWNS the namespace assigns it,
+        # and is a label when the thing being identified writes it. A prompt prefix
+        # is written by the task's author; `session_id` is assigned by the worker.
+        # The identifying field was on the task object and was not logged, while a
+        # self-written label was.
+        _logger.info(
+            f"EXEC {task_id[:12]} | hand={hand_name} | "
+            f"model={requested_model or '(default)'} | "
+            f"session={session_id or '(none)'} | prompt={prompt[:80]}...")
         print(f"[task-puller] Executing {task_id[:8]} ({hand_name})")
 
         exit_code = 1
