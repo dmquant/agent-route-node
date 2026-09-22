@@ -631,6 +631,7 @@ _WRITERS = {"opencode": _prepare_opencode, "claude": _prepare_claude,
 #
 # So: ask the endpoint, once per (server, url, credential), before handing the
 # config to a model.
+PROBE_HEADER = "X-Agent-Route-Probe"
 _CRED_VERDICT: dict = {}
 
 
@@ -645,6 +646,49 @@ def _cred_key(cfg: dict) -> tuple:
     """
     return (cfg.get("name"), cfg.get("url"), cfg.get("header"), cfg.get("scheme"),
             hashlib.sha256((cfg.get("key") or "").encode()).hexdigest()[:12])
+
+
+def _probe(url: str, hdrs: dict, timeout: float) -> tuple:
+    """(http_status_of_the_GATED_call, body_bytes) or raises.
+
+    INITIALIZE IS NOT THE GATED CALL, AND THIS FUNCTION'S FIRST DRAFT ASKED ONLY THAT.
+    Measured on the institute surface from sg01, 2026-09-22:
+
+        initialize, real key           HTTP 200
+        initialize, zeroed key         HTTP 200
+        initialize, NO CREDENTIAL      HTTP 200   <- the probe could not fail
+        tools/list, real key           HTTP 200, 57 tools
+        tools/list, NO CREDENTIAL      HTTP 401
+
+    So a verifier built on `initialize` reports "ok" for a node with no credential
+    at all. That is this estate's own probe rule -- a control must fail when the
+    thing it controls for is broken -- and the first version of this file did not
+    meet it. The handshake is not the entitlement.
+    """
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2024-11-05", "capabilities": {},
+        "clientInfo": {"name": "agent-route-node", "version": "1"}}}).encode()
+    req = urllib.request.Request(url, data=body, headers=hdrs, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        sid = resp.headers.get("Mcp-Session-Id")
+        resp.read()
+    h = dict(hdrs)
+    if sid:
+        h["Mcp-Session-Id"] = sid
+    body = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list",
+                       "params": {}}).encode()
+    req = urllib.request.Request(url, data=body, headers=h, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.status, resp.read()
+
+
+# Candidate headers, tried ONLY to repair a DEFAULT -- never to override a
+# declaration. See _resolve_live_header.
+_HEADER_CANDIDATES = (
+    ("X-Admin-Token", ""),
+    ("X-API-Key", ""),
+    ("Authorization", "Bearer "),
+)
 
 
 def verify_server(cfg: dict, timeout: float = 8.0) -> tuple:
@@ -669,16 +713,19 @@ def verify_server(cfg: dict, timeout: float = 8.0) -> tuple:
         # auth failure and is not one -- so a bare urllib UA would make this
         # function invent the refusal it exists to detect.
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+        # THE PROBE SAYS IT IS A PROBE, ON EVERY CALL IT MAKES.
+        #
+        # It was identifiable only by `agent-route-node` in the handshake's
+        # clientInfo, and the handshake is not the only call any more -- so the
+        # gated `tools/list` counted as model traffic in this estate's own proxy
+        # test. Anything that has to be recognised downstream should say what it
+        # is rather than be inferred from an incidental field.
+        PROBE_HEADER: "1",
         cfg["header"]: (cfg.get("scheme") or "") + cfg["key"],
     }
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-        "protocolVersion": "2024-11-05", "capabilities": {},
-        "clientInfo": {"name": "agent-route-node", "version": "1"}}}).encode()
     try:
-        req = urllib.request.Request(cfg["url"], data=body, headers=hdrs, method="POST")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            resp.read()
-        verdict = ("ok", "initialize accepted")
+        _probe(cfg["url"], hdrs, timeout)
+        verdict = ("ok", "tools/list accepted")
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             verdict = ("refused", "HTTP %d" % e.code)
@@ -690,6 +737,63 @@ def verify_server(cfg: dict, timeout: float = 8.0) -> tuple:
     return verdict
 
 
+def _resolve_live_header(cfg: dict, timeout: float = 8.0):
+    """Repair a DEFAULTED header by measurement. Never override a DECLARED one.
+
+    THE PREFIX TABLE IS THE DEFECT THIS ESTATE KEEPS SHIPPING, SO IT IS NOT USED.
+
+    rho a3eb1148-1576-465d-818a-586acdad6749 and epistates
+    5435d777-af48-4f49-b7df-705ed479eee9 both corrected LFAB-100 within the hour:
+    the header that works is a function of the KEY CLASS, and pinning
+    `X-Admin-Token` globally would break a node holding a read-class key. rho
+    proposed deriving the header from the key PREFIX. Measured at this seat, that
+    would fail here:
+
+        the institute's own 401 names  sk_ins_ -> X-API-Key · sk_admin -> X-Admin-Token
+        sg01's installed key           nk_c4f7e9...  67 chars   MATCHES NEITHER
+        X-Admin-Token                  200, 57 tools
+        X-API-Key                      401
+        Authorization: Bearer          401
+
+    epistates found a third class too -- 49 chars, neither documented prefix. A
+    prefix table is a list of literals in the path that decides what the
+    structural test applies to, which is the shape this estate has now shipped
+    three times (a tag vocabulary, an extension list, an accumulate-verb list).
+
+    So: ASK. The endpoint knows, and it answers in one call per candidate.
+
+    THE BOUNDARY, and it is the room's own declared-versus-label rule:
+
+        DEFAULTED   this node guessed, so a better guess found by measurement is
+                    strictly an improvement -- repair it and say so
+        DECLARED    an operator wrote it down. Silently substituting something
+                    else would make the .env a decoration and the next debugger's
+                    first hypothesis wrong. Report the failure, change nothing.
+    """
+    hdr_var = (cfg.get("url_var") or "AI_INSTITUTE_MCP_URL").replace("_URL", "_HEADER")
+    if (os.getenv(hdr_var) or "").strip():
+        return None          # DECLARED -- not ours to second-guess
+    for header, scheme in _HEADER_CANDIDATES:
+        if header == cfg["header"] and scheme == (cfg.get("scheme") or ""):
+            continue         # already tried, already refused
+        hdrs = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+            PROBE_HEADER: "1",
+            header: scheme + cfg["key"],
+        }
+        try:
+            status, _ = _probe(cfg["url"], hdrs, timeout)
+        except urllib.error.HTTPError:
+            continue
+        except Exception:
+            return None      # the network, not the header -- stop guessing
+        if status == 200:
+            return {"header": header, "scheme": scheme, "var": hdr_var}
+    return None
+
+
 def _header_advice(cfg: dict) -> str:
     """What to change, named -- because a refusal that does not say is a dead end.
 
@@ -699,12 +803,17 @@ def _header_advice(cfg: dict) -> str:
     """
     declared = bool((os.getenv(cfg.get("url_var", "").replace("_URL", "_HEADER")) or "").strip()) \
         if cfg.get("url_var") else False
-    return ("sent %r%s; it was %s. The institute surface in this federation accepts "
-            "X-Admin-Token with an EMPTY scheme — if that is this endpoint, set "
-            "%s=X-Admin-Token in the data-dir .env"
+    var = (cfg.get("url_var", "AI_INSTITUTE_MCP_URL")).replace("_URL", "_HEADER")
+    # NOT a prescription. The accepted header is a function of the KEY CLASS and
+    # this node cannot know the class from the key -- sg01's is `nk_`, which
+    # matches neither prefix the institute's own refusal documents. So report
+    # what was sent and where it came from, and let the caller read the
+    # endpoint's own 401 body, which states the rule.
+    return ("sent %r%s; it was %s. The accepted header depends on the KEY CLASS, "
+            "not on the endpoint — read the 401 body, which states the mapping — "
+            "and declare the result as %s in the data-dir .env"
             % (cfg["header"], (" with scheme %r" % cfg["scheme"]) if cfg.get("scheme") else "",
-               "declared" if declared else "DEFAULTED, not declared",
-               (cfg.get("url_var", "AI_INSTITUTE_MCP_URL")).replace("_URL", "_HEADER")))
+               "declared" if declared else "DEFAULTED, not declared", var))
 
 
 def prepare(hand: str, workspace_dir: str) -> McpPlan:
@@ -747,6 +856,18 @@ def prepare(hand: str, workspace_dir: str) -> McpPlan:
     for cfg in servers:
         verdict, detail = verify_server(cfg)
         if verdict == "refused":
+            repaired = _resolve_live_header(cfg)
+            if repaired:
+                _logger.warning(
+                    "MCP %s: server %r refused %r (%s), and the header was DEFAULTED "
+                    "rather than declared — %r works against this endpoint with this "
+                    "key, so the server is offered under it. Declare %s=%s in the "
+                    "data-dir .env so this is not rediscovered every process.",
+                    hand, cfg["name"], cfg["header"], detail, repaired["header"],
+                    repaired["var"], repaired["header"])
+                cfg = dict(cfg, header=repaired["header"], scheme=repaired["scheme"])
+                kept.append(cfg)
+                continue
             _logger.error("MCP %s: server %r REFUSED THE NODE'S CREDENTIAL (%s) — "
                           "withholding it rather than handing the hand a server that "
                           "401s inside its tool loop. %s",

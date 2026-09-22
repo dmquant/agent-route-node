@@ -13,7 +13,9 @@ HITS = {"a": 0, "b": 0}
 # not be counted together. mcp_config.verify_server asks every server it is about
 # to hand over whether it will serve this credential -- added after sg01 spent a
 # window handing every hand a server that 401ed -- and it identifies itself as
-# `agent-route-node` in clientInfo. The isolation this file guards is that a
+# a dedicated X-Agent-Route-Probe header on EVERY call it makes -- it used to be
+# recognisable only by `agent-route-node` in the handshake's clientInfo, and the
+# gated tools/list carries no such field. The isolation this file guards is that a
 # HAND's traffic reaches only its own upstream; a node-side probe reaching the
 # server it is probing is the feature working.
 PROBES = {"a": 0, "b": 0}
@@ -24,7 +26,7 @@ def fake_upstream(key):
         def do_POST(self):
             n = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(n)
-            if b'"agent-route-node"' in raw:
+            if self.headers.get("X-Agent-Route-Probe"):
                 PROBES[key] += 1
             else:
                 HITS[key] += 1
