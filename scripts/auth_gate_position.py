@@ -70,6 +70,50 @@ BODIES = [
 ]
 
 
+def identity_kind(same_body_valid_vs_invalid, same_body_present_vs_absent,
+                  different_bodies_at_no_credential):
+    """Three byte-identities exist and they mean three different things.
+
+    rho 5537d7f2-0c2a-4dac-a067-034b5bf77da2 named two of them and they are the
+    two that matter most:
+
+        identical ACROSS CREDENTIAL STATES   auth does nothing for that method
+        identical ACROSS BODIES at no-cred   the body was never parsed
+
+    There is a third, and it is the one this estate actually measured and then
+    mislabelled in 154e1c4c-6089-4323-9868-826b6ae25a67: a VALID credential and an
+    INVALID one, both PRESENT, producing the same refusal. That is neither of
+    rho's cases -- auth plainly did something (it refused), and the body was
+    plainly read. It means the valid credential is not valid ON THAT HEADER, and
+    the institute surface makes those two identical deliberately and says so.
+
+        pair being compared                    identical means
+        valid vs invalid, both PRESENT         the key is wrong FOR THIS HEADER
+                                               (or revoked -- the institute
+                                               discloses it keeps no revocation
+                                               list, so these are indistinguishable
+                                               there BY DESIGN)
+        present vs ABSENT, same body           auth does nothing for this method
+        different BODIES, both no-credential   the body was never parsed
+    """
+    out = []
+    if same_body_valid_vs_invalid:
+        out.append(("KEY WRONG FOR THIS HEADER",
+                    "a valid and an invalid credential, both presented, are refused "
+                    "identically -- auth ran and rejected both, which says nothing "
+                    "about the method and everything about the header"))
+    if same_body_present_vs_absent:
+        out.append(("AUTH DOES NOTHING HERE",
+                    "presenting a credential changes nothing for this method, so the "
+                    "method sits above the check"))
+    if different_bodies_at_no_credential:
+        out.append(("BODY NEVER PARSED",
+                    "structurally different bodies produce one refusal, which a "
+                    "surface that parsed first could not do -- the ordering leaving "
+                    "a fingerprint rather than being argued from source"))
+    return out
+
+
 def classify(unknown_method_nocred, malformed_nocred):
     """The taxonomy, as a pure function of two observations.
 
@@ -116,14 +160,27 @@ for name, url, auth in SURF:
     print("=== %s ===" % name)
     print("  %-18s %-18s %s" % ("body", "NO CREDENTIAL", "WITH CREDENTIAL (control)"))
     seen = {}
+    nocred_sizes = []
     for label, body in BODIES:
         a, an = post(url, dict(BASE), body)
         h = dict(BASE)
         h.update(auth)
         b, bn = post(url, h, body)
-        print("  %-18s %-9s %6dB   %-9s %6dB" % (label, a, an, b, bn))
+        print("  %-18s %-9s %6dB   %-9s %6dB%s" % (
+            label, a, an, b, bn, "   <- identical" if (a, an) == (b, bn) else ""))
         seen[label] = a
+        nocred_sizes.append((label, a, an))
     shape, why = classify(seen.get("UNKNOWN method"), seen.get("MALFORMED JSON"))
     print("  -> %s" % shape)
     print("     %s" % why)
+    # rho 5537d7f2: the better observable. A surface that parsed before refusing
+    # MUST answer a malformed body differently from a well-formed unknown method,
+    # because by then it knows they differ. One distinct size across structurally
+    # different bodies is the ordering leaving a fingerprint.
+    distinct = {(st, n) for _, st, n in nocred_sizes}
+    print("  -> no-credential responses: %d distinct (%s) across %d different bodies"
+          % (len(distinct), ", ".join("%s/%dB" % d for d in sorted(distinct)),
+             len(nocred_sizes)))
+    if len(distinct) == 1 and str(sorted(distinct)[0][0]).startswith(("401", "403")):
+        print("     ONE refusal for every body -- the body was never read")
     print()

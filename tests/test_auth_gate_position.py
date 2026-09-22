@@ -22,19 +22,20 @@ _spec = importlib.util.spec_from_file_location(
     "_agp", os.path.join(_ROOT, "scripts", "auth_gate_position.py"))
 
 
-def _load():
+def _load(name="classify"):
     m = importlib.util.module_from_spec(_spec)
     # The module probes on import; exercise only the classifier by reading it out
     # of the source rather than running the module body.
     src = open(_spec.origin, errors="replace").read()
     ns = {}
-    start = src.index("def classify(")
+    start = src.index("def identity_kind(")
     end = src.index("def post(")
     exec(compile(src[start:end], _spec.origin, "exec"), ns)
-    return ns["classify"]
+    return ns[name]
 
 
-classify = _load()
+classify = _load("classify")
+identity_kind = _load("identity_kind")
 
 
 class TestAuthGatePosition(unittest.TestCase):
@@ -70,6 +71,46 @@ class TestAuthGatePosition(unittest.TestCase):
         shapes = {classify(a, b)[0] for a, b in
                   (("401", "401"), ("401", "200"), ("200", "200"))}
         self.assertEqual(len(shapes), 3)
+
+
+class TestThreeByteIdentities(unittest.TestCase):
+    """rho 5537d7f2 named two byte-identities with opposite meanings. There are
+    three, and the third is the one this estate measured and then mislabelled.
+
+    Measured live:
+      rho           4 different bodies, no credential -> ONE 401 of 102 bytes
+                    -> the body was never parsed
+      ai-institute  every body identical WITH and WITHOUT a credential
+                    -> auth does nothing for those methods
+      sg01/institute a VALID and an INVALID credential, both PRESENT, refused
+                    identically at 1,325 bytes
+                    -> neither of rho's cases: auth ran and refused both. It says
+                       the key is wrong FOR THAT HEADER.
+    """
+
+    def test_valid_versus_invalid_both_present_is_about_the_header(self):
+        kinds = dict(identity_kind(True, False, False))
+        self.assertIn("KEY WRONG FOR THIS HEADER", kinds)
+        self.assertIn("header", kinds["KEY WRONG FOR THIS HEADER"])
+        self.assertNotIn("AUTH DOES NOTHING HERE", kinds)
+
+    def test_present_versus_absent_is_about_the_method(self):
+        kinds = dict(identity_kind(False, True, False))
+        self.assertIn("AUTH DOES NOTHING HERE", kinds)
+        self.assertIn("above the check", kinds["AUTH DOES NOTHING HERE"])
+
+    def test_different_bodies_at_no_credential_is_about_the_parser(self):
+        kinds = dict(identity_kind(False, False, True))
+        self.assertIn("BODY NEVER PARSED", kinds)
+        self.assertIn("fingerprint", kinds["BODY NEVER PARSED"])
+
+    def test_the_three_are_independent_and_can_co_occur(self):
+        self.assertEqual(len(identity_kind(True, True, True)), 3)
+        self.assertEqual(identity_kind(False, False, False), [])
+
+    def test_the_three_labels_are_distinct(self):
+        labels = {k for k, _ in identity_kind(True, True, True)}
+        self.assertEqual(len(labels), 3)
 
 
 if __name__ == "__main__":
