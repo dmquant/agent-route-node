@@ -160,6 +160,21 @@ def report(now, prev):
     # at both seats -- and a guess that is stated can be refused by someone who
     # knows better, while a guess inside a subtraction cannot.
     def _seat(c):
+        # THE ONE TRUNCATION IN THIS ESTATE THAT REACHES A COMPARISON, and its
+        # failure direction is the wrong one.
+        #
+        # epistates c04b39c9-3c83-40fb-acf7-56f0f6aadb8b names the class: a value
+        # truncated BEFORE storage silently becomes the comparison baseline, so
+        # display and comparison must not share a lossy path. Audited across this
+        # estate, every other slice is display-only. This one is not: the
+        # fingerprint is sha256[:12] and it is stored and compared here.
+        #
+        # A hash prefix is a deliberate elision rather than a lost denominator, so
+        # this is not epistates' defect. What it shares is the direction: 48 bits,
+        # and a collision makes two DIFFERENT credentials compare as the SAME seat
+        # -- which PERMITS a delta this function otherwise refuses. It fails open.
+        # Stated rather than widened, because widening the prefix would change the
+        # key of every stored census and break the comparison it exists to make.
         return (c.get("seat"), c.get("endpoint_host"), c.get("key_fingerprint"))
 
     def _norm(n):
@@ -205,17 +220,29 @@ def report(now, prev):
         print("  CORRESPONDENCE (basis: names matched on the segment after the last "
               "'__', which ASSUMES '__' separates a namespace at both seats)")
         print("    matched      %d" % len(pairs))
-        for n, m in pairs[:4]:
-            if n != m:
-                print("      %s  <->  %s" % (n, m))
+        shown = [(n, m) for n, m in pairs if n != m]
+        for n, m in shown[:4]:
+            print("      %s  <->  %s" % (n, m))
+        if len(shown) > 4:
+            print("      … and %d more renamed pairs not shown" % (len(shown) - 4))
         if ambiguous:
             print("    AMBIGUOUS    %d -- one name at the earlier seat matches several here" % len(ambiguous))
             for n, cs in ambiguous[:4]:
                 print("      %s  <->  %s" % (n, ", ".join(cs)))
-        print("    only in prev %d%s" % (len(only_prev),
-              ("  " + ", ".join(only_prev[:4])) if only_prev else ""))
-        print("    only in now  %d%s" % (len(only_now),
-              ("  " + ", ".join(only_now[:4])) if only_now else ""))
+            if len(ambiguous) > 4:
+                print("      … and %d more ambiguous names not shown" % (len(ambiguous) - 4))
+        # An elision that does not announce itself is indistinguishable from the
+        # value -- epistates c04b39c9. The COUNT was already printed here, so no
+        # denominator was ever inside the cut; what was missing is that the list
+        # beside it is a SAMPLE.
+        def _sample(names, k=4):
+            if not names:
+                return ""
+            head = ", ".join(names[:k])
+            return "  %s%s" % (head, "" if len(names) <= k
+                               else " … +%d not shown" % (len(names) - k))
+        print("    only in prev %d%s" % (len(only_prev), _sample(only_prev)))
+        print("    only in now  %d%s" % (len(only_now), _sample(only_now)))
         print("    a name present at one seat and absent at the other is an "
               "ENTITLEMENT difference OR a change over time, and this cannot "
               "separate them. That is why the delta is refused.")

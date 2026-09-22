@@ -172,6 +172,8 @@ def main() -> int:
               % (root, walked, eligible, len(hits), len(unreadable)))
         for up, kind in unreadable[:10]:
             print("    COULD NOT READ  %s  (%s)" % (up, kind))
+        if len(unreadable) > 10:
+            print("    … and %d more unreadable files not listed" % (len(unreadable) - 10))
         if not walked:
             empty_roots.append(root)
         for p, n, why in hits:

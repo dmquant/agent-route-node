@@ -211,8 +211,12 @@ for label, corrected_to, pat, probe in CLAIMS:
     print("%-42s %s" % (label, flag))
     if hits or review:
         print("      now: %s" % corrected_to)
+    if len(hits) > 6:
+        print("      (showing 6 of %d)" % len(hits))
     for p, n, l in hits[:6]:
         print("      HIT     %s:%d  %s" % (p, n, l))
+    if len(review) > 6:
+        print("      (showing 6 of %d)" % len(review))
     for p, n, l, w in review[:6]:
         print("      REVIEW  %s:%d  [exempted only by %r] %s" % (p, n, w, l))
 print()
