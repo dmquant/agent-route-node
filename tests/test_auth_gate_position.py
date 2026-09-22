@@ -148,12 +148,12 @@ class TestSharedPrefixIsFalsifiableByTheRun(unittest.TestCase):
         arms = [("ok", "real", 200, "{}"),
                 ("wrong header", "real", 401, self.REAL_REFUSAL),
                 ("bad key", "zeroed", 401, self.ZERO_REFUSAL)]
-        lens = {ln for _, ln, _ in shared_prefix_verdict(arms)}
-        self.assertEqual(len(lens), 1, "one shared prefix across all credentials")
+        prefixes = {p for _, p, _ in shared_prefix_verdict(arms)}
+        self.assertEqual(len(prefixes), 1, "one shared prefix across all credentials")
         # checked against a DIFFERENT implementation rather than restating this
         # function's own arithmetic back at it
-        self.assertEqual(lens.pop(),
-                         len(os.path.commonprefix([self.REAL_REFUSAL, self.ZERO_REFUSAL])))
+        self.assertEqual(prefixes.pop(),
+                         os.path.commonprefix([self.REAL_REFUSAL, self.ZERO_REFUSAL]))
 
     def test_a_not_falsified_verdict_does_not_claim_the_prefix_is_true(self):
         """The zeroed key may be unknown or may be withdrawn; the institute
@@ -248,6 +248,42 @@ class TestTheVerdictIsConditionalNotAnAssertion(unittest.TestCase):
                                           ("a", "real", 401, body),
                                           ("b", "zeroed", 401, body + "x")])[0][2]
         self.assertEqual(verdict(self.DISCLAIMING), verdict(self.ASSERTING))
+
+
+class TestTheVerdictReturnsTheEvidenceItPromises(unittest.TestCase):
+    """The verdict said "shown below" and the function returned an integer.
+
+    rho 083007c5-7814-4dc5-b40d-a019d6e9f43a found a docstring claiming no semantic
+    judgement over code that judged. The mirror here: a disposition argued in the
+    verdict string -- state the premise, PRINT THE EVIDENCE, let the reader judge --
+    and a return value that handed back the prefix's LENGTH.
+    """
+
+    REAL = '{"detail":"your key is not in it","a":1}'
+    ZERO = '{"detail":"your key is not in it","b":2}'
+
+    def test_the_prefix_itself_is_returned_not_its_length(self):
+        arms = [("ok", "real", 200, "{}"),
+                ("a", "real", 401, self.REAL),
+                ("b", "zeroed", 401, self.ZERO)]
+        for _, prefix, _ in shared_prefix_verdict(arms):
+            self.assertIsInstance(prefix, str)
+            self.assertIn("your key is not in it", prefix,
+                          "the reader cannot judge a claim they are not shown")
+
+    def test_the_no_shared_set_case_returns_an_empty_prefix_not_a_zero(self):
+        got = shared_prefix_verdict([("only", "real", 401, self.REAL)])
+        self.assertEqual(got[0][1], "")
+        self.assertIn("NO SHARED SET", got[0][2])
+
+    def test_the_returned_prefix_is_a_prefix_of_every_refusal_body(self):
+        arms = [("ok", "real", 200, "{}"),
+                ("a", "real", 401, self.REAL),
+                ("b", "zeroed", 401, self.ZERO)]
+        prefix = shared_prefix_verdict(arms)[0][1]
+        self.assertTrue(self.REAL.startswith(prefix))
+        self.assertTrue(self.ZERO.startswith(prefix))
+        self.assertGreater(len(prefix), 0)
 
 
 if __name__ == "__main__":

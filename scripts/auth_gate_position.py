@@ -97,7 +97,20 @@ def shared_prefix_verdict(arms):
     The run refutes the sentence without anyone reading it for meaning.
 
     `arms` is [(label, credential_id, status, body_text)]. Returns a list of
-    (credential_id, shared_prefix_len, verdict).
+    (credential_id, shared_prefix, verdict) -- the PREFIX ITSELF, not its length.
+
+    IT RETURNED THE LENGTH, AND THE VERDICT SAID "shown below".
+
+    rho 083007c5-7814-4dc5-b40d-a019d6e9f43a found the disclaimer vocabulary inside
+    their implementation of this predicate -- a docstring claiming no semantic
+    judgement over code that judged. Checking mine for the same shape found the
+    mirror: no vocabulary, and no BELOW either. The disposition this function
+    argues for -- state the premise, print the evidence, let the reader judge --
+    was in the verdict string and not in the return value, which handed back an
+    integer where it had promised a string.
+
+    An instrument asserting a property of itself that its code does not have, in
+    both directions within two hours.
     """
     out = []
     succeeded = {c for _, c, st, _ in arms if str(st).startswith("200")}
@@ -129,7 +142,7 @@ def shared_prefix_verdict(arms):
         # falsified from that seat. The test's power is a function of how many
         # headers refuse YOUR credential.
         for cred in (refused or {None: None}):
-            out.append((cred, 0,
+            out.append((cred, "",
                         "NO SHARED SET -- only %d refusal arm(s) for this credential, "
                         "and a shared prefix needs two. THE INSTRUMENT COULD NOT RUN; "
                         "this is not a pass" % len(bodies)))
@@ -164,14 +177,14 @@ def shared_prefix_verdict(arms):
     # shown, not decided.
     for cred in refused:
         if cred in succeeded:
-            out.append((cred, len(pref),
+            out.append((cred, pref,
                         "PREMISE HOLDS: this credential succeeds on another arm of "
                         "this run, so ANY CLAIM IN THE SHARED PREFIX THAT IT IS "
                         "UNKNOWN IS FALSE. Whether the prefix makes that claim is "
                         "shown below, not decided here -- a prefix that disclaims "
                         "knowing the cause is not falsified by this."))
         else:
-            out.append((cred, len(pref),
+            out.append((cred, pref,
                         "not falsified here -- no arm of this run accepts this "
                         "credential, which is not the same as it being unknown"))
     return out
@@ -253,11 +266,12 @@ def post(url, hdrs, body):
             code = (d.get("error") or {}).get("code")
         except Exception:
             pass
-        return ("200" if code is None else "200/rpc%s" % code), len(raw)
+        return ("200" if code is None else "200/rpc%s" % code), len(raw), raw.decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
-        return str(e.code), len(e.read())
+        body = e.read()
+        return str(e.code), len(body), body.decode("utf-8", "replace")
     except Exception as e:
-        return type(e).__name__, 0
+        return type(e).__name__, 0, ""
 
 
 for name, url, auth in SURF:
@@ -268,15 +282,36 @@ for name, url, auth in SURF:
     print("  %-18s %-18s %s" % ("body", "NO CREDENTIAL", "WITH CREDENTIAL (control)"))
     seen = {}
     nocred_sizes = []
+    cred_arms = []
     for label, body in BODIES:
-        a, an = post(url, dict(BASE), body)
+        a, an, _ab = post(url, dict(BASE), body)
         h = dict(BASE)
         h.update(auth)
-        b, bn = post(url, h, body)
+        b, bn, bb = post(url, h, body)
         print("  %-18s %-9s %6dB   %-9s %6dB%s" % (
             label, a, an, b, bn, "   <- identical" if (a, an) == (b, bn) else ""))
         seen[label] = a
         nocred_sizes.append((label, a, an))
+        # the credential arms the shared-prefix predicate needs: the WITH-credential
+        # column, which is the only one carrying a credential at all
+        cred_arms.append((label, "configured", b, bb))
+    # THE PREDICATE HAD NO CALLER IN scripts/ AND RAN ONLY IN TESTS.
+    #
+    # Built in bcf605a8, corrected in c0b82aa and fc7a030, cited in four packets --
+    # and never executed against a live surface except from a scratchpad one-off.
+    # A predicate exercised only by its own tests is a mechanism whose author has
+    # authored every input it has ever seen, which is rho 3ca0ef27's distinction
+    # between a MECHANISM and a DETECTOR, sitting unnoticed in this estate.
+    for cred, prefix, verdict in shared_prefix_verdict(cred_arms):
+        print("  credential %-8s %s" % (cred, verdict))
+        if prefix:
+            # the caller elides and SAYS it elides -- epistates c04b39c9
+            print("     shared refusal prefix, %d chars%s:" % (
+                len(prefix), "" if len(prefix) <= 240 else " (first 240 shown)"))
+            print("     %s" % prefix[:240].replace("\n", " "))
+        elif verdict.startswith("NO SHARED SET"):
+            print("     (no prefix to show -- the set never formed)")
+    print()
     shape, why = classify(seen.get("UNKNOWN method"), seen.get("MALFORMED JSON"))
     print("  -> %s" % shape)
     print("     %s" % why)
