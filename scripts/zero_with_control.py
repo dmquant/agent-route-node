@@ -113,7 +113,8 @@ def high_water(path, state_dir, subject_ns):
 
 
 def zero(label, path, pattern, probe_text, reach_pattern, fixed=True,
-         witness=None, state_dir=None, subject_ns=None, ns_is_owned=False):
+         witness=None, state_dir=None, subject_ns=None, ns_is_owned=False,
+         at_offset_zero=False):
     """Report `pattern` over `path`, with every control, or refuse.
 
     THE THIRD AXIS, and it is rho's question in 3f2e681c-30d4-4477-b7cc-29cd1cc492b2:
@@ -156,9 +157,31 @@ def zero(label, path, pattern, probe_text, reach_pattern, fixed=True,
             raise Fault("REACH FAILED -- a pattern known to occur in the subject was "
                         "not found; the subject is missing, truncated or not what it should be")
         # IDENTITY: the right class is not the right instance.
-        if witness is not None and grep_count(path, witness, True) < 1:
-            raise Fault("IDENTITY FAILED -- the witness %r is absent, so this is a "
-                        "file of the right KIND and not the one meant" % witness[:60])
+        if witness is not None:
+            if grep_count(path, witness, True) < 1:
+                raise Fault("IDENTITY FAILED -- the witness %r is absent, so this is a "
+                            "file of the right KIND and not the one meant" % witness[:60])
+            # HALF OF THE FOURTH AXIS, CLOSED -- and only half, which is the point.
+            #
+            # LFAB-084 pinned this as a residual: "a subject that contains the
+            # witness PLUS FOREIGN CONTENT -- two logs concatenated -- passes every
+            # arm here." For an APPEND-ONLY subject the witness has a position as
+            # well as a presence: it is the first line, so it belongs at offset 0.
+            #
+            #   foreign content PREPENDED   the witness is no longer first   CAUGHT
+            #   foreign content APPENDED    the witness is still first, the file
+            #                               grew, the inode is unchanged      NOT CAUGHT
+            #
+            # The second is indistinguishable from the log simply continuing, and no
+            # property of the substrate separates them -- it would take knowing what
+            # the writer was entitled to write. So this closes the prepend half and
+            # the append half stays open, narrower and still named.
+            if at_offset_zero:
+                with open(path, "rb") as fh:
+                    head = fh.read(len(witness.encode()) + 8)
+                if not head.decode("utf-8", "replace").startswith(witness):
+                    raise Fault("IDENTITY FAILED -- the witness is present but NOT AT "
+                                "OFFSET 0, so content was PREPENDED to the subject")
         grew = ""
         if state_dir is not None:
             if subject_ns is None:
@@ -174,8 +197,9 @@ def zero(label, path, pattern, probe_text, reach_pattern, fixed=True,
         print("  %-42s INSTRUMENT FAULT -- %s" % (label, e))
         return None
     size = os.path.getsize(path)
-    ident = (" · identity ok, witness %r" % witness[:32]) if witness else \
-            " · IDENTITY NOT ASSERTED (class only)"
+    ident = (" · identity ok, witness %r%s" % (
+        witness[:32], " @0" if at_offset_zero else "")) if witness else \
+        " · IDENTITY NOT ASSERTED (class only)"
     print("  %-42s %6d   [probe ok · reach ok%s%s · subject %s, %d bytes]"
           % (label, n, ident, grew, os.path.basename(path), size))
     return n

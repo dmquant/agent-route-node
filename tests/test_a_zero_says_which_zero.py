@@ -166,13 +166,33 @@ v, out = run("hostB, its own namespace", other_host_same_path, "not ready",
              "the server was not ready", "EXEC ", state_dir=st3, subject_ns="hostB")
 check("a second host under its own namespace does not collide", v == 0, out[-60:])
 
+print("\nFOURTH AXIS, HALF CLOSED -- a witness has a POSITION, not only a presence")
+pre = os.path.join(d, "prepended.txt")
+with open(pre, "w") as fh:
+    fh.write("EXEC zzz | FOREIGN LOG LINE\n" + WITNESS + "\nEXEC ddd | hand=agy\n")
+v, out = run("witness present but not first", pre, "not ready", "the server was not ready",
+             "EXEC ", witness=WITNESS, at_offset_zero=True)
+check("content PREPENDED is refused", v is None)
+check("and it says NOT AT OFFSET 0", "NOT AT OFFSET 0" in out, out[:95])
+v, out = run("witness present and not first, position NOT asserted", pre, "not ready",
+             "the server was not ready", "EXEC ", witness=WITNESS)
+check("without at_offset_zero the same file passes -- the arm is opt-in", v == 0)
+with open(subject, "w") as fh:
+    fh.write(WITNESS + "\nEXEC ccc | hand=claude\n")
+v, out = run("witness first, content APPENDED", subject, "not ready",
+             "the server was not ready", "EXEC ", witness=WITNESS, at_offset_zero=True)
+check("the intended subject still passes", v == 0, out[:60])
+check("and the output marks the position was checked", "@0" in out, out[:80])
+
 print("\nKNOWN RESIDUAL, pinned rather than claimed closed:")
 print("  · a witness cannot be verified BY the tool -- only the caller knows")
 print("    whether it identifies, so it is printed and the judgement is the")
 print("    reader's rather than the instrument's")
-print("  · a subject that CONTAINS the witness plus foreign content -- two logs")
-print("    concatenated -- passes every arm here. That is the fourth axis, and")
-print("    neither this nor rho's row covers it today.")
+print("  · the fourth axis is now HALF closed: content PREPENDED moves the")
+print("    witness off offset 0 and is caught. Content APPENDED leaves the")
+print("    witness first, the file grown and the inode unchanged, which is")
+print("    indistinguishable from the log simply continuing -- no property of")
+print("    the substrate separates them, and that half stays open.")
 
 print("\n%s" % ("ALL PASS" if not fails else "FAILURES: %s" % fails))
 sys.exit(1 if fails else 0)
