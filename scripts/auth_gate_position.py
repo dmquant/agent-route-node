@@ -70,6 +70,66 @@ BODIES = [
 ]
 
 
+def shared_prefix_verdict(arms):
+    """Is a refusal's SHARED PREFIX falsified by another arm of the same run?
+
+    rho 7413d26b-a93e-42d5-a86b-d93097180cee proposes a rule: a refusal's shared
+    prefix may assert what the surface OBSERVED, never what it INFERRED. An
+    observation about the request is true of every member of the set that shares
+    it; an inference about the world is not, and the member it is false for is
+    exactly the one that needed help.
+
+    They asked whether this probe set separates the two. IT DOES NOT -- these
+    probes vary the BODY at a fixed credential state and record only status and
+    size, so they never read the sentence and never vary the credential.
+
+    But the rule does not need a semantic judgement to be enforced, which is
+    better than a fourth column. A shared prefix is a claim made about EVERY
+    member of the set that shares it. So:
+
+        if the SAME CREDENTIAL succeeds on any arm of this run, then a shared
+        prefix asserting something negative ABOUT THAT CREDENTIAL is falsified
+        BY THE RUN ITSELF
+
+    Measured on the institute: the valid key under the wrong header and a bad key
+    under the right header share a 467-character prefix reading "your key is not
+    in it" -- and that same key returns 200 with 57 tools under X-Admin-Token.
+    The run refutes the sentence without anyone reading it for meaning.
+
+    `arms` is [(label, credential_id, status, body_text)]. Returns a list of
+    (credential_id, shared_prefix_len, verdict).
+    """
+    out = []
+    succeeded = {c for _, c, st, _ in arms if str(st).startswith("200")}
+    refused = {}
+    for label, cred, st, body in arms:
+        if not str(st).startswith(("401", "403")):
+            continue
+        refused.setdefault(cred, []).append((label, body or ""))
+    # the prefix shared across DIFFERENT credentials is the one that makes a
+    # claim about all of them
+    bodies = [b for pairs in refused.values() for _, b in pairs]
+    if len(bodies) < 2:
+        return out
+    pref = bodies[0]
+    for b in bodies[1:]:
+        i = 0
+        while i < min(len(pref), len(b)) and pref[i] == b[i]:
+            i += 1
+        pref = pref[:i]
+    for cred in refused:
+        if cred in succeeded:
+            out.append((cred, len(pref),
+                        "SHARED PREFIX FALSIFIED BY THIS RUN -- this credential "
+                        "succeeds on another arm, so a prefix asserting it is "
+                        "unknown is false for it"))
+        else:
+            out.append((cred, len(pref),
+                        "not falsified here -- no arm of this run accepts this "
+                        "credential, which is not the same as it being unknown"))
+    return out
+
+
 def identity_kind(same_body_valid_vs_invalid, same_body_present_vs_absent,
                   different_bodies_at_no_credential):
     """Three byte-identities exist and they mean three different things.

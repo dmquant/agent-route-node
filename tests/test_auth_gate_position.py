@@ -28,13 +28,14 @@ def _load(name="classify"):
     # of the source rather than running the module body.
     src = open(_spec.origin, errors="replace").read()
     ns = {}
-    start = src.index("def identity_kind(")
+    start = src.index("def shared_prefix_verdict(")
     end = src.index("def post(")
     exec(compile(src[start:end], _spec.origin, "exec"), ns)
     return ns[name]
 
 
 classify = _load("classify")
+shared_prefix_verdict = _load("shared_prefix_verdict")
 identity_kind = _load("identity_kind")
 
 
@@ -111,6 +112,64 @@ class TestThreeByteIdentities(unittest.TestCase):
     def test_the_three_labels_are_distinct(self):
         labels = {k for k, _ in identity_kind(True, True, True)}
         self.assertEqual(len(labels), 3)
+
+
+class TestSharedPrefixIsFalsifiableByTheRun(unittest.TestCase):
+    """rho 7413d26b-a93e-42d5-a86b-d93097180cee: a refusal's shared prefix may
+    assert what the surface OBSERVED, never what it INFERRED -- and they asked
+    whether this probe set separates the two.
+
+    It does not, and it does not need to. A shared prefix is a claim about every
+    member sharing it, so if the SAME CREDENTIAL succeeds on another arm of the
+    same run, a prefix asserting that credential is unknown is refuted by the run
+    without anyone reading the sentence.
+
+    Measured live on sg01 against the institute:
+        REAL key, X-Admin-Token    200  30,393B
+        REAL key, X-API-Key        401   1,436B
+        REAL key, Authorization    401   1,436B
+        ZEROED key, X-Admin-Token  401   1,184B
+        shared refusal prefix      958 chars, asserting "your key is not in it"
+        -> FALSIFIED for the real credential, not falsified for the zeroed one
+    """
+
+    REAL_REFUSAL = '{"error":{"refusal":"not_recognised","detail":"your key is not in it"}}'
+    ZERO_REFUSAL = '{"error":{"refusal":"not_recognised","detail":"your key is not in it","x":1}}'
+
+    def test_a_credential_that_succeeds_elsewhere_falsifies_the_shared_prefix(self):
+        arms = [("ok", "real", 200, "{}"),
+                ("wrong header", "real", 401, self.REAL_REFUSAL),
+                ("bad key", "zeroed", 401, self.ZERO_REFUSAL)]
+        got = {c: v for c, _, v in shared_prefix_verdict(arms)}
+        self.assertIn("FALSIFIED", got["real"])
+        self.assertNotIn("FALSIFIED", got["zeroed"])
+
+    def test_the_prefix_length_is_the_shared_one_across_credentials(self):
+        arms = [("ok", "real", 200, "{}"),
+                ("wrong header", "real", 401, self.REAL_REFUSAL),
+                ("bad key", "zeroed", 401, self.ZERO_REFUSAL)]
+        lens = {ln for _, ln, _ in shared_prefix_verdict(arms)}
+        self.assertEqual(len(lens), 1, "one shared prefix across all credentials")
+        # checked against a DIFFERENT implementation rather than restating this
+        # function's own arithmetic back at it
+        self.assertEqual(lens.pop(),
+                         len(os.path.commonprefix([self.REAL_REFUSAL, self.ZERO_REFUSAL])))
+
+    def test_a_not_falsified_verdict_does_not_claim_the_prefix_is_true(self):
+        """The zeroed key may be unknown or may be withdrawn; the institute
+        discloses it keeps no revocation list, so this run cannot tell."""
+        arms = [("wrong header", "real", 401, self.REAL_REFUSAL),
+                ("bad key", "zeroed", 401, self.ZERO_REFUSAL)]
+        got = {c: v for c, _, v in shared_prefix_verdict(arms)}
+        self.assertIn("not the same as it being unknown", got["zeroed"])
+
+    def test_one_refusal_alone_yields_no_verdict(self):
+        """A prefix shared with nothing is not a shared prefix."""
+        self.assertEqual(
+            shared_prefix_verdict([("only", "real", 401, self.REAL_REFUSAL)]), [])
+
+    def test_a_run_with_no_refusals_yields_no_verdict(self):
+        self.assertEqual(shared_prefix_verdict([("ok", "real", 200, "{}")]), [])
 
 
 if __name__ == "__main__":
