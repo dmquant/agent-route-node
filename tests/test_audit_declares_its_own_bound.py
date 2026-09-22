@@ -61,6 +61,25 @@ print("\nthe pattern table is exempted STRUCTURALLY, never by a word")
 check("self-skip is a line range", isinstance(_mod._SELF_SKIP, range))
 check("it covers the CLAIMS literal only", len(_mod._SELF_SKIP) < len(open("scripts/retraction_audit.py").read().splitlines()))
 
+print("\na ZERO must say WHICH zero it is -- rho 57804d95")
+check("the suppression line distinguishes 'none applied' from a count",
+      "SUPPRESSED by strong retraction language" in out)
+check("a claim matching nothing says so, and does not read as plain CLEAN",
+      "PATTERN MATCHED NOTHING" not in out)
+check("and it says the control passed, so 'gone' is a statement not an ambiguity",
+      "0 matches, pattern control OK" in out or "matched, all carried" in out)
+
+print("\nevery pattern carries a positive control, and the control can FAIL")
+import re as _re
+check("every claim is a 4-tuple with a probe", all(len(c) == 4 for c in _mod.CLAIMS),
+      "%d claims" % len(_mod.CLAIMS))
+check("every pattern matches its own probe",
+      all(_re.search(p_, pr, _re.I) for _, _, p_, pr in _mod.CLAIMS))
+check("the control announced itself in the output", "pattern control:" in out)
+# A control that cannot fail is decoration. Prove this one can.
+check("a broken pattern FAILS its own probe",
+      not _re.search(r"this pattern matches nothing at all", "the gateway serves 91 tools", _re.I))
+
 print("\nKNOWN AND UNFIXED, pinned so a later edit cannot pretend otherwise:")
 print("  · the exemption path is a VOCABULARY. No structural form of")
 print("    'does this line carry a retraction' exists, so the weak list is")

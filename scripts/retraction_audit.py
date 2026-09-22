@@ -18,38 +18,56 @@ import os, re, subprocess
 ROOT = "/Users/daoming/prog/automations/llm/agent-route-node"
 MEM = os.path.expanduser("~/.claude/projects/-Users-daoming-prog-automations-llm/memory")
 
-# (label, what I retracted it TO, regex for the ORIGINAL ASSERTION)
+# (label, what I retracted it TO, regex for the ORIGINAL ASSERTION, a PROBE)
+#
+# The PROBE is an example of the assertion as originally made, and it is a
+# positive control: a pattern that does not match its own probe is BROKEN, which
+# is a different thing from a claim that is gone, and without it the two are
+# indistinguishable from the output. rho 57804d95-ed76-49ef-b3fe-dd3203a873d5
+# discarded a whole run when its control failed on the same pass -- "the control
+# is the only reason the first number is not in this message."
 CLAIMS = [
     ("agy expands ${VAR}", "agy does NOT expand; it needs a literal",
-     r"agy.{0,60}expand|expand.{0,40}\$\{|\$\{VAR\}.{0,40}(work|expand)"),
+     r"agy.{0,60}expand|expand.{0,40}\$\{|\$\{VAR\}.{0,40}(work|expand)",
+     "the agy registry will expand ${ROS_GATEWAY_MCP_KEY} at load"),
     ("governed coverage 3 of 4", "4 of 4 since codex reached ros-gateway",
-     r"\b3\s*(of|/)\s*4\b|three of (the )?four"),
+     r"\b3\s*(of|/)\s*4\b|three of (the )?four",
+     "governed coverage is 3 of 4 hands"),
     # The retraction stands; its stated REASON was over-general and is corrected
     # here. Measured 2026-09-22 from sg01: ros-gateway's tools/list requires auth
     # (real key -> 92 tools, garbage key -> 401, no key -> 401). The no-auth fact
     # was about the INSTITUTE endpoint, not this one.
     ("all three header forms return 200", "all three were measured against tools/list, which "
      "exercises no credential on the institute endpoint; ros-gateway's tools/list DOES require auth",
-     r"all three header forms|three header forms.{0,30}200"),
+     r"all three header forms|three header forms.{0,30}200",
+     "all three header forms returned 200 against the gateway"),
     ("the list is exhaustive / do not search", "scoped SCOPE/CONTENTS sections",
-     r"list is exhaustive|[Dd]o not search the filesystem|searching the filesystem will not"),
+     r"list is exhaustive|[Dd]o not search the filesystem|searching the filesystem will not",
+     "the list is exhaustive; do not search the filesystem"),
     ("58 argument names as a live figure", "75, still 75 as of 2026-09-22T04:52Z",
-     r"\b58\b.{0,40}(argument|name)|(argument|name).{0,40}\b58\b"),
+     r"\b58\b.{0,40}(argument|name)|(argument|name).{0,40}\b58\b",
+     "the gateway serves 58 distinct argument names"),
     ("three namespaces behind the gateway", "four, and vibe is live with 17 tools",
-     r"three namespaces|3 namespaces"),
+     r"three namespaces|3 namespaces",
+     "there are three namespaces behind the gateway"),
     ("vibe is a sentinel / not a namespace", "vibe is live: 17 tools, 21 args",
-     r"vibe.{0,60}(sentinel|not a (real )?namespace|unavailable)|sentinel.{0,40}vibe"),
+     r"vibe.{0,60}(sentinel|not a (real )?namespace|unavailable)|sentinel.{0,40}vibe",
+     "vibe is a sentinel, not a real namespace"),
     ("install_gate.verify trap", "withdrawn for a recording proxy",
-     r"\btrap\b"),
+     r"\btrap\b",
+     "install_gate.verify stands up a trap and counts the hits"),
     # This corrected_to was itself stale within the day: 91 became 92 when
     # institute__research_projects_list arrived. A correction is a claim and
     # decays like one, so the ledger's own values now carry an as-of.
     ("75 tools as a live figure", "92 as of 2026-09-22T04:52Z (was 91; +1 institute)",
-     r"\b75\s+tools\b"),
+     r"\b75\s+tools\b",
+     "the gateway serves 75 tools to this key"),
     ("91 tools as a live figure", "92 as of 2026-09-22T04:52Z",
-     r"\b91\s+tools\b"),
+     r"\b91\s+tools\b",
+     "the gateway serves 91 tools to this key"),
     ("pull env identical on both nodes", "four of six values differ",
-     r"identical on both|same on both nodes"),
+     r"identical on both|same on both nodes",
+     "the pull env is identical on both nodes"),
 ]
 
 # THE EXEMPTION PATH IS A VOCABULARY, AND THAT IS THIS TOOL'S WORST PART.
@@ -113,13 +131,29 @@ for base in (ROOT, MEM):
                 targets.append(os.path.join(dirpath, f))
 
 print("files searched: %d  (repo + memory)" % len(targets))
+
+# EVERY PATTERN IS CONTROLLED BEFORE IT IS TRUSTED.
+#
+# rho 57804d95-ed76-49ef-b3fe-dd3203a873d5 asked whether a zero here says WHICH
+# zero it is. It did not -- and making it say so surfaced two claims matching
+# nothing at all, which this could then not separate into "the claim is gone" and
+# "the regex is broken". The probe separates them: a pattern that fails its own
+# example is broken, full stop, and no result from this run may be read as clean.
+# rho discarded an entire run on exactly this ground and was right to: "the
+# control is the only reason the first number is not in this message."
+_broken = [lbl for lbl, _, pat, probe in CLAIMS if not re.search(pat, probe, re.I)]
+if _broken:
+    print("PATTERN CONTROL FAILED for %d claim(s): %s" % (len(_broken), ", ".join(_broken)))
+    print("A pattern that does not match its own example cannot report a clean result.")
+    raise SystemExit(2)
+print("pattern control: %d of %d patterns match their own example" % (len(CLAIMS), len(CLAIMS)))
 print()
 total_hits = 0
 total_review = 0
 suppressed_by = {}
-for label, corrected_to, pat in CLAIMS:
+for label, corrected_to, pat, probe in CLAIMS:
     rx = re.compile(pat, re.I)
-    hits, review = [], []
+    hits, review, raw_matches, suppressed_here = [], [], 0, 0
     for path in targets:
         try:
             lines = open(path, errors="replace").read().splitlines()
@@ -130,11 +164,13 @@ for label, corrected_to, pat in CLAIMS:
                 continue
             if _is_own_pattern_table(path, i + 1):
                 continue
+            raw_matches += 1
             window = "\n".join(lines[max(0, i - 2):i + 3])
             verdict, word = _window_verdict(window)
             where = (os.path.relpath(path, os.path.dirname(ROOT)), i + 1,
                      line.strip()[:120])
             if verdict == "SUPPRESS":
+                suppressed_here += 1
                 suppressed_by[word.lower()] = suppressed_by.get(word.lower(), 0) + 1
             elif verdict == "REVIEW":
                 review.append(where + (word,))
@@ -142,7 +178,28 @@ for label, corrected_to, pat in CLAIMS:
                 hits.append(where)
     total_hits += len(hits)
     total_review += len(review)
-    flag = "CLEAN" if not (hits or review) else "%d unmarked, %d review" % (len(hits), len(review))
+    # A ZERO MUST SAY WHICH ZERO IT IS.
+    #
+    # rho 57804d95-ed76-49ef-b3fe-dd3203a873d5: "a guard with no exemption to
+    # report and one that forgot to report read identically." Same shape here, one
+    # level up. CLEAN used to mean two different things:
+    #   the pattern matched N lines and every one carried retraction language
+    #       -> the claim is asserted in several places and all are marked. Good.
+    #   the pattern matched NOTHING
+    #       -> the claim may be gone, or the wording may have drifted, or the
+    #          regex may be broken. A broken pattern reads CLEAN forever, and that
+    #          is a FALSE NEGATIVE in a tool whose whole job is finding what was
+    #          forgotten.
+    # This cannot tell those two apart either -- but it can stop hiding that it
+    # cannot, which is the difference between an unknown and an unknown unknown.
+    if hits or review:
+        flag = "%d unmarked, %d review" % (len(hits), len(review))
+    elif raw_matches:
+        flag = "CLEAN  (%d matched, all carried retraction language)" % raw_matches
+    else:
+        # The probe passed above, so the pattern is not broken. That leaves one
+        # reading, and it is now a statement rather than an ambiguity.
+        flag = "CLEAN  -- 0 matches, pattern control OK: the claim is gone from the corpus"
     print("%-42s %s" % (label, flag))
     if hits or review:
         print("      now: %s" % corrected_to)
@@ -154,10 +211,12 @@ print()
 print("TOTAL unmarked assertions: %d   REVIEW (weak exemption only): %d" % (total_hits, total_review))
 # An exemption nobody can see is the defect this repo keeps finding in other
 # people's instruments. Print what was suppressed and on whose authority.
-print("SUPPRESSED by strong retraction language: %d  %s"
-      % (sum(suppressed_by.values()),
-         ", ".join("%s=%d" % kv for kv in sorted(suppressed_by.items(), key=lambda kv: -kv[1]))
-         or "none"))
+_total_suppressed = sum(suppressed_by.values())
+print("SUPPRESSED by strong retraction language: %s"
+      % ("NONE APPLIED -- no window carried retraction language" if not _total_suppressed
+         else "%d  (%s)" % (_total_suppressed,
+                            ", ".join("%s=%d" % kv for kv in
+                                      sorted(suppressed_by.items(), key=lambda kv: -kv[1])))))
 print()
 print("BOUND: this matcher has ~40 false fires on real text and NO confirmed real")
 print("positive. It is a linter a person reads. It must not gate.")
