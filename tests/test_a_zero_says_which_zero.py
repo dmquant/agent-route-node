@@ -110,12 +110,12 @@ print("\nMONOTONIC -- an append-only subject that SHRANK is a fault, not a zero"
 st = os.path.join(d, "state")
 os.makedirs(st, exist_ok=True)
 v, out = run("first sight", subject, "not ready", "the server was not ready",
-             "EXEC ", witness=WITNESS, state_dir=st)
+             "EXEC ", witness=WITNESS, state_dir=st, subject_ns="test-host")
 check("records a high water on first sight", v == 0 and "high water new" in out, out[-60:])
 with open(subject, "w") as fh:                      # truncate under the instrument
     fh.write("EXEC aaa | hand=codex\n")
 v, out = run("after truncation", subject, "not ready", "the server was not ready",
-             "EXEC ", witness=WITNESS, state_dir=st)
+             "EXEC ", witness=WITNESS, state_dir=st, subject_ns="test-host")
 check("a shrunken subject is refused", v is None)
 check("and it names rotation or truncation", "SHRANK" in out, out[:90])
 
@@ -126,12 +126,12 @@ subj2 = os.path.join(d, "pinned.txt")
 with open(subj2, "w") as fh:
     fh.write("EXEC aaa | hand=codex\n")
 v, out = run("first sight pins dev:ino", subj2, "not ready", "the server was not ready",
-             "EXEC ", state_dir=st2)
+             "EXEC ", state_dir=st2, subject_ns="test-host")
 check("the inode pair is recorded and printed", v == 0 and "pinned dev:ino" in out, out[-70:])
 with open(subj2, "a") as fh:
     fh.write("EXEC bbb | hand=agy\n")
 v, out = run("same file, grown", subj2, "not ready", "the server was not ready",
-             "EXEC ", state_dir=st2)
+             "EXEC ", state_dir=st2, subject_ns="test-host")
 check("growth on the same inode is fine", v == 0)
 # A ROTATION: the path now names a different file that is LARGER, so the size
 # floor alone would pass it. Only the inode catches this.
@@ -139,9 +139,32 @@ os.remove(subj2)
 with open(subj2, "w") as fh:
     fh.write("EXEC ccc | hand=codex\nEXEC ddd | hand=agy\nEXEC eee | hand=claude\n")
 v, out = run("rotated to a BIGGER file", subj2, "not ready", "the server was not ready",
-             "EXEC ", state_dir=st2)
+             "EXEC ", state_dir=st2, subject_ns="test-host")
 check("a rotation is refused even though it GREW", v is None)
 check("and it says DIFFERENT FILE, not SHRANK", "DIFFERENT FILE" in out, out[:95])
+
+print("\nNAMESPACE -- rho 5cad52c6: the kernel owns inodes WITHIN ONE HOST and no more")
+st3 = os.path.join(d, "state3")
+os.makedirs(st3, exist_ok=True)
+v, out = run("no namespace given", subject, "not ready", "the server was not ready",
+             "EXEC ", state_dir=st3)
+check("a floor without a namespace is REFUSED", v is None)
+check("and it says why -- one kernel", "assigned by ONE kernel" in out, out[:95])
+v, out = run("namespace given", subject, "not ready", "the server was not ready",
+             "EXEC ", state_dir=st3, subject_ns="hostA")
+check("with a namespace it proceeds", v == 0)
+check("and it says the namespace is a SELF-WRITTEN LABEL by default",
+      "SELF-WRITTEN LABEL" in out, out[-70:])
+v, out = run("owner-assigned namespace", subject, "not ready", "the server was not ready",
+             "EXEC ", state_dir=st3, subject_ns="hostA", ns_is_owned=True)
+check("an owner-assigned namespace says so", "owner-assigned" in out)
+# The collision rho's question exposed: two hosts, one path, one state dir.
+other_host_same_path = os.path.join(d, "hostB_log.txt")
+with open(other_host_same_path, "w") as fh:
+    fh.write("EXEC bbb | hand=agy\n")
+v, out = run("hostB, its own namespace", other_host_same_path, "not ready",
+             "the server was not ready", "EXEC ", state_dir=st3, subject_ns="hostB")
+check("a second host under its own namespace does not collide", v == 0, out[-60:])
 
 print("\nKNOWN RESIDUAL, pinned rather than claimed closed:")
 print("  · a witness cannot be verified BY the tool -- only the caller knows")

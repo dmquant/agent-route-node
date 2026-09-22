@@ -28,6 +28,7 @@ So a zero needs two controls, and they fail for different reasons:
 A zero with both is a measurement. A zero with either missing is an artefact
 waiting to be believed, and this prints INSTRUMENT FAULT rather than a number.
 """
+import hashlib
 import os
 import subprocess
 import sys
@@ -54,7 +55,7 @@ def grep_count(path, pattern, fixed=True):
     return int(out)
 
 
-def high_water(path, state_dir):
+def high_water(path, state_dir, subject_ns):
     """Largest size ever seen, AND the inode the subject occupied.
 
     rho 21b7b3c7-dd88-444b-b7a0-eb5a48e7b59f marks where the witness limit stops
@@ -70,7 +71,26 @@ def high_water(path, state_dir):
     So the pin is the pair, and size is the second arm rather than the first: a
     rotated log gets a new inode even when it has grown past the old high water.
     """
-    key = os.path.join(state_dir, "hw-" + path.replace(os.sep, "_").lstrip("_"))
+    # THE KEY WAS THE PATH ALONE, WHICH IS A NAMESPACE THIS INSTRUMENT DOES NOT OWN.
+    #
+    # rho 5cad52c6-f29c-44cd-9cd9-9ff8460820e0 gives the mechanism behind the test:
+    # "a declaration IDENTIFIES when it is assigned by the layer that owns the
+    # namespace, and is a LABEL when it is written by the thing being identified."
+    #
+    # (st_dev, st_ino) is assigned by the kernel -- and by ONE kernel. Measured
+    # 2026-09-22: sg01's log is dev=16777234 ino=89531272 and gubei12's is
+    # dev=16777231 ino=22938923, two APFS device numbers from two machines that
+    # could as easily have coincided. So the pair identifies a file WITHIN a host
+    # and says nothing across hosts, while this key was derived from the path
+    # alone -- so two hosts checked against one state dir shared a single
+    # high-water mark and a single pinned inode.
+    #
+    # The namespace above the kernel is the HOST, and this instrument owns none of
+    # it. `subject_ns` is where the caller names it, and the caller must say
+    # whether that name came from an owning layer or from the subject itself,
+    # because the two are worth different amounts and only the caller knows which.
+    key = os.path.join(state_dir, "hw-" + hashlib.sha256(
+        ("%s\0%s" % (subject_ns, path)).encode()).hexdigest()[:20])
     prev_size = prev_id = None
     if os.path.exists(key):
         try:
@@ -93,7 +113,7 @@ def high_water(path, state_dir):
 
 
 def zero(label, path, pattern, probe_text, reach_pattern, fixed=True,
-         witness=None, state_dir=None):
+         witness=None, state_dir=None, subject_ns=None, ns_is_owned=False):
     """Report `pattern` over `path`, with every control, or refuse.
 
     THE THIRD AXIS, and it is rho's question in 3f2e681c-30d4-4477-b7cc-29cd1cc492b2:
@@ -141,8 +161,13 @@ def zero(label, path, pattern, probe_text, reach_pattern, fixed=True,
                         "file of the right KIND and not the one meant" % witness[:60])
         grew = ""
         if state_dir is not None:
-            now_b, prev_b, ino = high_water(path, state_dir)
-            grew = " · pinned dev:ino %s · floor ok (%d bytes, high water %s)" % (
+            if subject_ns is None:
+                raise Fault("a persistent floor needs a SUBJECT NAMESPACE: (st_dev, st_ino) "
+                            "is assigned by ONE kernel, so a state dir keyed on the path "
+                            "alone merges every host that shares the path")
+            now_b, prev_b, ino = high_water(path, state_dir, subject_ns)
+            grew = " · ns %r (%s) · pinned dev:ino %s · floor ok (%d bytes, high water %s)" % (
+                subject_ns[:24], "owner-assigned" if ns_is_owned else "SELF-WRITTEN LABEL",
                 ino, now_b, "new" if prev_b is None else str(prev_b))
         n = grep_count(path, pattern, fixed)
     except Fault as e:
