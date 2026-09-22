@@ -2,6 +2,22 @@
 import importlib, json, os, sys, tempfile
 
 sys.path.insert(0, os.getcwd())
+
+# Isolate the DATA DIRECTORY, not only the credentials.
+#
+# This test scrubbed AI_INSTITUTE_*/ROS_GATEWAY_* from the start, because those
+# are obviously shared. It did not scrub the filesystem, and _prepare_claude
+# writes to _mcp_dir(), which is get_data_dir()/mcp -- the LIVE per-task config
+# directory on a node. Seventeen configs naming https://gateway.example/mcp
+# accumulated in a real ~/.agent-route/mcp before anyone noticed, and on
+# 2026-09-22 they were briefly read back as evidence that the node was
+# provisioning unreachable endpoints. They were this file's output.
+#
+# The sibling agy test got this right (it rebinds _AGY_CONFIG) because a
+# node-global registry LOOKS dangerous. A per-task file looks harmless, and the
+# distinction that actually mattered was never global-vs-per-task: it was
+# whether the path is computed from a real base directory or redirected.
+os.environ["AGENT_ROUTE_HOME"] = tempfile.mkdtemp(prefix="test-mcp-home-")
 for k in list(os.environ):
     if k.startswith(("AI_INSTITUTE_", "ROS_GATEWAY_")):
         del os.environ[k]
@@ -55,6 +71,12 @@ print("claude — one --mcp-config carrying both")
 ws = tempfile.mkdtemp()
 p = mcp_config.prepare("claude", ws)
 path = p.args[p.args.index("--mcp-config") + 1]
+# The isolation above is only real if the write actually landed inside it, so
+# check it here rather than trusting the env var. A test that contaminates live
+# state is worse than one that fails: it manufactures evidence.
+check("per-task config stays inside the test data dir",
+      os.path.realpath(path).startswith(os.path.realpath(os.environ["AGENT_ROUTE_HOME"])),
+      path)
 doc = json.load(open(path))
 check("both servers present", set(doc["mcpServers"]) == {"ai-institute", "ros-gateway"})
 check("--strict-mcp-config kept", "--strict-mcp-config" in p.args)
