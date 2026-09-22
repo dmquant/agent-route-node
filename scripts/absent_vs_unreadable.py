@@ -78,6 +78,62 @@ def _is_empty(node) -> str:
     return ""
 
 
+def scan_defaults(src: str, path: str):
+    """A DEFAULT standing in for a reading that did not happen.
+
+    epistates 3196c208-6f89-4ed6-93d0-d16dcdb7de14 named this in one line after
+    finding three instances in its own code by three different routes:
+
+        "`or` is where absence becomes a number in this codebase"
+        os.path.exists as an ABSENT test · d.get("messages") or [] ·
+        stamp.get("graphVersion") or "v0"
+
+    The sibling of the except-handler form this file already scans: there a FAILED
+    read becomes an empty value; here a MISSING one does, and the downstream
+    arithmetic accepts it without complaint because the default is a legal value
+    of the type.
+
+    THIS CANNOT DECIDE WHETHER A HIT IS A DEFECT, and it must not pretend to. The
+    discriminator is whether the default is a LEGAL VALUE OF THE QUANTITY or a
+    stand-in for a reading that did not happen -- `v0` is a version that does not
+    exist, while `_sync_state.get(key, 0)` is a real last-synced time for a file
+    never synced. Only the author knows which, so a hit is either FIXED or given
+    an `ABSENT-OK: <reason>` on or above the line, exactly as the handler scan does.
+    """
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return []
+    lines = src.splitlines()
+    out = []
+    for node in ast.walk(tree):
+        empty = detail = ""
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == "get" and len(node.args) == 2:
+            empty = _is_empty(node.args[1])
+            if empty:
+                try:
+                    detail = "%s = %s" % (ast.unparse(node)[:60], empty)
+                except Exception:
+                    detail = ".get(..., %s)" % empty
+        elif isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or) \
+                and len(node.values) == 2:
+            empty = _is_empty(node.values[1])
+            if empty:
+                try:
+                    detail = "%s = %s" % (ast.unparse(node)[:60], empty)
+                except Exception:
+                    detail = "... or %s" % empty
+        if not empty:
+            continue
+        ln = getattr(node, "lineno", 0)
+        window = "\n".join(lines[max(0, ln - 3):ln])
+        if "ABSENT-OK:" in window:
+            continue
+        out.append((ln, "default", detail))
+    return out
+
+
 def scan_source(src: str, path: str):
     """(high, low) findings. Each is (line, handler_repr, detail)."""
     try:
