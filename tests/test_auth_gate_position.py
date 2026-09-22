@@ -163,13 +163,45 @@ class TestSharedPrefixIsFalsifiableByTheRun(unittest.TestCase):
         got = {c: v for c, _, v in shared_prefix_verdict(arms)}
         self.assertIn("not the same as it being unknown", got["zeroed"])
 
-    def test_one_refusal_alone_yields_no_verdict(self):
-        """A prefix shared with nothing is not a shared prefix."""
-        self.assertEqual(
-            shared_prefix_verdict([("only", "real", 401, self.REAL_REFUSAL)]), [])
+    def test_one_refusal_alone_is_the_THIRD_STATE_not_silence(self):
+        """rho 95d9aba8-7206-4117-bd4d-9261d9a8feaf: NO SHARED SET must never read
+        as a pass. Returning [] here meant a caller who saw no verdict concluded
+        nothing was wrong -- this estate's own class, inside the instrument built
+        for it."""
+        got = shared_prefix_verdict([("only", "real", 401, self.REAL_REFUSAL)])
+        self.assertEqual(len(got), 1)
+        self.assertIn("NO SHARED SET", got[0][2])
+        self.assertIn("not a pass", got[0][2])
 
-    def test_a_run_with_no_refusals_yields_no_verdict(self):
-        self.assertEqual(shared_prefix_verdict([("ok", "real", 200, "{}")]), [])
+    def test_a_run_with_no_refusals_also_says_it_could_not_run(self):
+        got = shared_prefix_verdict([("ok", "real", 200, "{}")])
+        self.assertEqual(len(got), 1)
+        self.assertIn("NO SHARED SET", got[0][2])
+
+    def test_a_no_credential_arm_does_not_join_the_set(self):
+        """rho's clause: otherwise an absence-refusal supplies the second member
+        of a set the credential never formed, and the 'shared prefix' is shared
+        with a response about no credential at all."""
+        arms = [("ok", "real", 200, "{}"),
+                ("wrong header", "real", 401, self.REAL_REFUSAL),
+                ("no credential", "absent", 401, "{}")]
+        got = shared_prefix_verdict(arms)
+        self.assertEqual(len(got), 1)
+        self.assertIn("NO SHARED SET", got[0][2],
+                      "the absent arm must not form a set with the real one")
+        self.assertNotIn("absent", {c for c, _, _ in got})
+
+    def test_seat_dependence_is_visible_in_the_verdict(self):
+        """rho's seat: a credential accepted on two headers and refused on one
+        forms no set, so the sentence that is false about it cannot be falsified
+        from there. Same surface, same text, opposite outcome."""
+        widely_accepted = [("api", "rho", 200, "{}"), ("bearer", "rho", 200, "{}"),
+                           ("admin", "rho", 401, self.REAL_REFUSAL)]
+        narrowly = [("admin", "lf", 200, "{}"),
+                    ("api", "lf", 401, self.REAL_REFUSAL),
+                    ("bearer", "lf", 401, self.ZERO_REFUSAL)]
+        self.assertIn("NO SHARED SET", shared_prefix_verdict(widely_accepted)[0][2])
+        self.assertIn("FALSIFIED", shared_prefix_verdict(narrowly)[0][2])
 
 
 if __name__ == "__main__":

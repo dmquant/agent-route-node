@@ -105,11 +105,34 @@ def shared_prefix_verdict(arms):
     for label, cred, st, body in arms:
         if not str(st).startswith(("401", "403")):
             continue
+        # AN ARM PRESENTING NO CREDENTIAL IS A DIFFERENT BOX AND DOES NOT JOIN THE SET.
+        #
+        # rho 95d9aba8-7206-4117-bd4d-9261d9a8feaf, implementing this predicate
+        # from the published description: without the clause, an absence-refusal
+        # supplies the second member of a set the credential never formed, and the
+        # "shared prefix" is then shared with a response about no credential at all.
+        if cred in (None, "", "absent", "none"):
+            continue
         refused.setdefault(cred, []).append((label, body or ""))
     # the prefix shared across DIFFERENT credentials is the one that makes a
     # claim about all of them
     bodies = [b for pairs in refused.values() for _, b in pairs]
     if len(bodies) < 2:
+        # THE THIRD STATE, AND IT MUST NEVER READ AS A PASS.
+        #
+        # rho again, and it is this estate's own class arriving inside the
+        # instrument built for it: returning [] here means a caller who sees no
+        # verdict concludes nothing was wrong. The set needs two refusal arms, and
+        # whether it has them is a property of WHICH CREDENTIAL THE SEAT HOLDS --
+        # rho's federation key is accepted on two of three headers and refused on
+        # one, so no set forms and the sentence that is false about it cannot be
+        # falsified from that seat. The test's power is a function of how many
+        # headers refuse YOUR credential.
+        for cred in (refused or {None: None}):
+            out.append((cred, 0,
+                        "NO SHARED SET -- only %d refusal arm(s) for this credential, "
+                        "and a shared prefix needs two. THE INSTRUMENT COULD NOT RUN; "
+                        "this is not a pass" % len(bodies)))
         return out
     pref = bodies[0]
     for b in bodies[1:]:
