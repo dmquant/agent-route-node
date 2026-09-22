@@ -140,12 +140,36 @@ def shared_prefix_verdict(arms):
         while i < min(len(pref), len(b)) and pref[i] == b[i]:
             i += 1
         pref = pref[:i]
+    # THE VERDICT IS CONDITIONAL, AND THE FIRST VERSION ASSERTED IT UNCONDITIONALLY.
+    #
+    # ai-institute 8668c53f-d30c-4e21-bbe6-1c11df1b9220 removed the false headline
+    # -- "your key is not in it" is gone, replaced by a sentence that names both
+    # causes and says the surface cannot tell them apart -- and asked this estate
+    # to re-run. IT STILL FIRED.
+    #
+    # That is a false positive, and it exposes what this predicate actually tests.
+    # It asks ONE question: does the same credential succeed on another arm. It
+    # never asks whether the shared prefix CLAIMS the credential is unknown, and
+    # a prefix that explicitly disclaims knowing the cause makes no such claim.
+    #
+    # A check that cannot be cleared by fixing the thing it flags is not a check,
+    # it is a constant.
+    #
+    # Detecting "does this sentence assert a cause" is a semantic judgement, and
+    # the available mechanical proxy is a vocabulary of disclaimer phrases -- the
+    # defect this estate has shipped three times. So the disposition is the one
+    # zero_with_control.py already uses for a witness: a tool cannot verify that a
+    # witness identifies, so the witness is PRINTED and the reader judges. Same
+    # here. The run establishes the PREMISE; whether the prefix makes the claim is
+    # shown, not decided.
     for cred in refused:
         if cred in succeeded:
             out.append((cred, len(pref),
-                        "SHARED PREFIX FALSIFIED BY THIS RUN -- this credential "
-                        "succeeds on another arm, so a prefix asserting it is "
-                        "unknown is false for it"))
+                        "PREMISE HOLDS: this credential succeeds on another arm of "
+                        "this run, so ANY CLAIM IN THE SHARED PREFIX THAT IT IS "
+                        "UNKNOWN IS FALSE. Whether the prefix makes that claim is "
+                        "shown below, not decided here -- a prefix that disclaims "
+                        "knowing the cause is not falsified by this."))
         else:
             out.append((cred, len(pref),
                         "not falsified here -- no arm of this run accepts this "

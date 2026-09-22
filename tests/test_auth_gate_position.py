@@ -141,8 +141,8 @@ class TestSharedPrefixIsFalsifiableByTheRun(unittest.TestCase):
                 ("wrong header", "real", 401, self.REAL_REFUSAL),
                 ("bad key", "zeroed", 401, self.ZERO_REFUSAL)]
         got = {c: v for c, _, v in shared_prefix_verdict(arms)}
-        self.assertIn("FALSIFIED", got["real"])
-        self.assertNotIn("FALSIFIED", got["zeroed"])
+        self.assertIn("PREMISE HOLDS", got["real"])
+        self.assertNotIn("PREMISE HOLDS", got["zeroed"])
 
     def test_the_prefix_length_is_the_shared_one_across_credentials(self):
         arms = [("ok", "real", 200, "{}"),
@@ -201,7 +201,53 @@ class TestSharedPrefixIsFalsifiableByTheRun(unittest.TestCase):
                     ("api", "lf", 401, self.REAL_REFUSAL),
                     ("bearer", "lf", 401, self.ZERO_REFUSAL)]
         self.assertIn("NO SHARED SET", shared_prefix_verdict(widely_accepted)[0][2])
-        self.assertIn("FALSIFIED", shared_prefix_verdict(narrowly)[0][2])
+        self.assertIn("PREMISE HOLDS", shared_prefix_verdict(narrowly)[0][2])
+
+
+class TestTheVerdictIsConditionalNotAnAssertion(unittest.TestCase):
+    """ai-institute 8668c53f removed the false headline and asked for a re-run.
+    The check STILL FIRED -- a false positive, because the predicate asks only
+    whether the credential succeeds elsewhere and never whether the shared prefix
+    claims it is unknown.
+
+    Measured on sg01 after their third pass: "not in it" ABSENT, and the prefix now
+    reads "this header+credential pairing was not accepted. This surface CANNOT
+    tell you which of two causes applies". A prefix that disclaims knowing the
+    cause makes no claim for the run to falsify.
+
+    A check that cannot be cleared by fixing the thing it flags is not a check,
+    it is a constant.
+    """
+
+    DISCLAIMING = ('{"detail":"this header+credential pairing was not accepted. '
+                   'This surface CANNOT tell you which of two causes applies"}')
+    ASSERTING = '{"detail":"your key is not in it"}'
+
+    def test_the_verdict_states_a_premise_and_does_not_assert_falsification(self):
+        arms = [("ok", "real", 200, "{}"),
+                ("a", "real", 401, self.DISCLAIMING),
+                ("b", "zeroed", 401, self.DISCLAIMING + "x")]
+        v = shared_prefix_verdict(arms)[0][2]
+        self.assertIn("PREMISE HOLDS", v)
+        self.assertNotIn("FALSIFIED BY THIS RUN", v)
+
+    def test_the_verdict_says_the_claim_is_shown_not_decided(self):
+        arms = [("ok", "real", 200, "{}"),
+                ("a", "real", 401, self.ASSERTING),
+                ("b", "zeroed", 401, self.ASSERTING + "x")]
+        v = shared_prefix_verdict(arms)[0][2]
+        self.assertIn("shown below, not decided here", v)
+        self.assertIn("disclaims knowing the cause is not falsified", v)
+
+    def test_a_disclaiming_and_an_asserting_prefix_get_the_SAME_verdict(self):
+        """Deliberately: the predicate cannot tell them apart, and pretending it
+        can is what produced the false positive. The prefix is printed so a reader
+        can, which is zero_with_control.py's witness disposition."""
+        def verdict(body):
+            return shared_prefix_verdict([("ok", "real", 200, "{}"),
+                                          ("a", "real", 401, body),
+                                          ("b", "zeroed", 401, body + "x")])[0][2]
+        self.assertEqual(verdict(self.DISCLAIMING), verdict(self.ASSERTING))
 
 
 if __name__ == "__main__":
