@@ -615,14 +615,40 @@ def prepare(hand: str, workspace_dir: str) -> McpPlan:
     task that cannot reach the MCP must still run on the old path, which is
     still delivering its files.
     """
+    # EVERY OUTCOME SAYS WHAT IT DECIDED, INCLUDING THE ONES THAT DO NOTHING.
+    #
+    # Three of the four early returns below used to leave NO line at all, and
+    # only a plan with a note ever reached the INFO at the bottom. So a hand that
+    # ran with no MCP server configured left a record identical to one that was
+    # never asked -- and identical to one where the feature is off.
+    #
+    # Measured 2026-09-22 on sg01: 3 lines matching "mcp" in five months of
+    # task_puller.log, against 273 tasks on 09-22 alone. When the operator
+    # reported a hand saying "MCP server institute was not ready for this step"
+    # (6b2bbbf1-15d4-4e20-af37-0791d1608437), the node's own record could not say
+    # whether that hand had been given a server, because the silence covering
+    # "configured" and the silence covering "not configured" are the same
+    # silence. That is this estate's own rule -- absence must be inspectable --
+    # broken in the one place that would have answered the question in one grep.
+    #
+    # One line per hand per task. That is the price of being able to answer.
     servers = servers_for(hand)
     if not servers:
         if not settings() and not gateway_settings():
-            return McpPlan()                      # feature off entirely
-        return McpPlan(note=f"{hand} is in no server's configured hand set")
+            _logger.info("MCP %s: NOT CONFIGURED — the feature is off on this node "
+                         "(no institute and no gateway settings); the hand runs "
+                         "with no MCP server", hand)
+            return McpPlan()
+        note = f"{hand} is in no server's configured hand set"
+        _logger.info("MCP %s: NOT CONFIGURED — %s; servers exist on this node but "
+                     "none lists this hand", hand, note)
+        return McpPlan(note=note)
     writer = _WRITERS.get(hand)
     if not writer:
-        return McpPlan(note=f"{hand} has no per-task MCP surface yet (stage 2)")
+        note = f"{hand} has no per-task MCP surface yet (stage 2)"
+        _logger.info("MCP %s: NOT CONFIGURED — %s; %d server(s) would have been "
+                     "offered", hand, note, len(servers))
+        return McpPlan(note=note)
     try:
         plan = writer(servers, workspace_dir)
     except Exception as e:
@@ -630,4 +656,8 @@ def prepare(hand: str, workspace_dir: str) -> McpPlan:
         return McpPlan(note=f"setup failed: {e}")
     if plan.note:
         _logger.info("MCP %s: %s", hand, plan.note)
+    else:
+        # A writer that returns an empty note did something and said nothing.
+        _logger.info("MCP %s: writer ran and declared no plan for %d server(s)",
+                     hand, len(servers))
     return plan

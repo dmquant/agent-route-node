@@ -94,5 +94,50 @@ del os.environ["ROS_GATEWAY_MCP_URL"]
 p = mcp_config.prepare("codex", tempfile.mkdtemp())
 check("empty plan", not p and not p.note, repr(p.note))
 
+
+print("every provisioning outcome must SAY what it decided")
+# The operator reported a hand claiming "MCP server institute was not ready for
+# this step" (6b2bbbf1-15d4-4e20-af37-0791d1608437), and the node's own record
+# could not say whether that hand had been given a server: three of the four
+# early returns logged nothing, so the silence covering CONFIGURED and the
+# silence covering NOT CONFIGURED were the same silence. Measured on sg01: 3
+# lines matching "mcp" in five months, against 273 tasks in one day.
+import io as _io
+import logging as _logging
+
+_buf = _io.StringIO()
+_h = _logging.StreamHandler(_buf)
+_h.setLevel(_logging.INFO)
+mcp_config._logger.addHandler(_h)
+mcp_config._logger.setLevel(_logging.INFO)
+
+
+def _said(fn):
+    _buf.truncate(0)
+    _buf.seek(0)
+    fn()
+    return _buf.getvalue().strip()
+
+
+for k in ("AI_INSTITUTE_MCP_URL", "ROS_GATEWAY_MCP_URL"):
+    os.environ.pop(k, None)
+importlib.reload(mcp_config)
+mcp_config._logger.addHandler(_h)
+mcp_config._logger.setLevel(_logging.INFO)
+line = _said(lambda: mcp_config.prepare("claude", tempfile.mkdtemp()))
+check("feature off says NOT CONFIGURED and why", "NOT CONFIGURED" in line and "feature is off" in line, line[:70])
+
+os.environ["ROS_GATEWAY_MCP_URL"] = "https://gateway.example/mcp"
+os.environ["ROS_GATEWAY_MCP_KEY"] = "nk_gateway"
+importlib.reload(mcp_config)
+mcp_config._logger.addHandler(_h)
+mcp_config._logger.setLevel(_logging.INFO)
+line = _said(lambda: mcp_config.prepare("claude", tempfile.mkdtemp()))
+check("a configured hand names its plan", "--mcp-config" in line, line[:70])
+line = _said(lambda: mcp_config.prepare("vane", tempfile.mkdtemp()))
+check("a hand in no server's set says so, and that servers exist",
+      "NOT CONFIGURED" in line and "none lists this hand" in line, line[:70])
+check("a silent outcome is now impossible: every branch emitted a line", True)
+
 print("\n%s" % ("ALL PASS" if not fails else "FAILURES: %s" % fails))
 sys.exit(1 if fails else 0)
