@@ -147,6 +147,96 @@ def scan_defaults(src: str, path: str):
     return out
 
 
+def scan_ordering_defaults(src: str, path: str):
+    """A defaulted value used as a SORT KEY, with the direction the default lands.
+
+    rho 277aeea1-502e-4042-8591-d6520ce15822 showed the two-clause rule is necessary
+    and not sufficient: rho holds `r.get('waiting_ms') or 0` on the SAME field as
+    epistates and it is harmless, because rho sorts DESCENDING and publishes the
+    max while epistates sorted ASCENDING into a head slice. Both reach an ordering
+    and a published figure; only one can corrupt anything.
+
+    Their clause 3 -- DOES THE DEFAULT LAND WHERE THE CONSUMER LOOKS -- and their
+    question back: did this estate record the DIRECTION at each site, or only that
+    a default was present? Only presence. So the 267 was untriaged by construction,
+    and rho is right that a shape count cannot be triaged without driving each site.
+
+    The ORDERING subset, though, is statically decidable, and it is the subset where
+    rho, epistates and agora-pm each found their defect. Where the default lands:
+
+        reverse=False, key not negated   the default (0, "") sorts FIRST
+        reverse=True,  key not negated   it sorts LAST
+        reverse=False, key NEGATED       the negation makes it LAST
+        reverse=True,  key NEGATED       FIRST
+        i.e. ranks_first == (reverse == negated)
+
+    Harmful needs BOTH: it ranks first AND a head slice is taken. The arithmetic
+    half of clause 3 stays undecidable from here and is not claimed.
+    """
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return []
+    out = []
+    # FOUR ORDERING FORMS, not one. The first draft covered `sorted()` alone and
+    # reported a clean zero -- while app/main.py:1799 holds
+    # `feed.sort(key=lambda x: x.get("timestamp", 0), reverse=True)`, which is the
+    # class exactly. A zero scoped to one spelling is the REACH gap this estate has
+    # been auditing other people for, so the forms it does not cover are covered.
+    #
+    # max() and min() have no slice to look for: they RETURN the extreme, so the
+    # head is read by construction. list.sort() is in-place and what is read
+    # afterwards is not locally decidable -- reported as UNKNOWN rather than False,
+    # because a head slice that cannot be seen is not a head slice that is absent.
+    for node in ast.walk(tree):
+        kind = None
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "sorted":
+                kind = "sorted"
+            elif node.func.id in ("max", "min"):
+                kind = node.func.id
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == "sort":
+            kind = "list.sort"
+        if kind is None:
+            continue
+        key = next((k.value for k in node.keywords if k.arg == "key"), None)
+        rev = next((k.value for k in node.keywords if k.arg == "reverse"), None)
+        if key is None:
+            continue
+        defaulted = [d for _, _, d in scan_defaults(ast.unparse(key), "<key>")]
+        if not defaulted:
+            continue
+        reverse = isinstance(rev, ast.Constant) and rev.value is True
+        if kind == "max":
+            reverse = True          # max reads the largest: same polarity as reverse
+        negated = any(isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.USub)
+                      for n in ast.walk(key))
+        ranks_first = (reverse == negated)
+        if kind in ("max", "min"):
+            head_slice = True       # the extreme IS the read
+        elif kind == "list.sort":
+            head_slice = None       # in-place; not locally decidable
+        else:
+            head_slice = False
+            for parent in ast.walk(tree):
+                for child in ast.iter_child_nodes(parent):
+                    if child is node and isinstance(parent, ast.Subscript):
+                        sl = parent.slice
+                        head_slice = isinstance(sl, ast.Slice) and sl.lower is None
+        if ranks_first and head_slice is True:
+            verdict = "HEAD-READ"
+        elif ranks_first and head_slice is None:
+            verdict = "RANKS-FIRST, read UNKNOWN"
+        else:
+            verdict = "tail-or-unsliced"
+        out.append((getattr(node, "lineno", 0), verdict,
+                    "%s reverse=%s negated=%s head=%s -> default ranks %s  [%s]"
+                    % (kind, reverse, negated, head_slice,
+                       "FIRST" if ranks_first else "last", defaulted[0][:40])))
+    return out
+
+
 def scan_source(src: str, path: str):
     """(high, low) findings. Each is (line, handler_repr, detail)."""
     try:

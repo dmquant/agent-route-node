@@ -76,6 +76,31 @@ print("\nthe None exclusion did NOT move the published figure, and that was meas
 print("  267 hits before the exclusion, 267 after -- this tree uses no None-defaults,")
 print("  so the count stands; the detector would have over-counted on a tree that did.")
 
+print("\nORDERING DIRECTION -- rho 277aeea1: a shape count cannot be triaged")
+print("  without knowing WHERE the default lands. Eight forms, all four polarities.")
+for label, src, want in [
+    ("sorted asc + head slice",  'x = sorted(rs, key=lambda r: r.get("w", 0))[:5]', "HEAD-READ"),
+    ("sorted desc + head slice", 'x = sorted(rs, key=lambda r: r.get("w", 0), reverse=True)[:5]', "tail-or-unsliced"),
+    ("sorted NEGATED key",       'x = sorted(rs, key=lambda r: -(r.get("w") or 0))[:5]', "tail-or-unsliced"),
+    ("min() -- the extreme IS the read", 'x = min(rs, key=lambda r: r.get("w", 0))', "HEAD-READ"),
+    ("max() -- opposite polarity", 'x = max(rs, key=lambda r: r.get("w", 0))', "tail-or-unsliced"),
+    ("list.sort asc -- read UNKNOWN", 'feed.sort(key=lambda x: x.get("t", 0))', "RANKS-FIRST, read UNKNOWN"),
+    ("list.sort desc",           'feed.sort(key=lambda x: x.get("t", 0), reverse=True)', "tail-or-unsliced"),
+]:
+    got = avu.scan_ordering_defaults(src, "<t>")
+    check(label, len(got) == 1 and got[0][1] == want,
+          (got[0][1] if got else "no site") + " (want %s)" % want)
+check("a key with NO default is not a site",
+      len(avu.scan_ordering_defaults('x = sorted(rs, key=lambda r: r["w"])[:5]', "<t>")) == 0)
+
+print("\n  NOT DECIDABLE FROM HERE, and not claimed:")
+print("    · the ARITHMETIC half of clause 3 -- whether a defaulted value reaches")
+print("      a PUBLISHED CELL rather than a discarded intermediate. epistates'")
+print("      `or \"v0\"` was that half and no sort was involved.")
+print("    · list.sort() is in-place, so what is read afterwards is not local.")
+print("      Reported as UNKNOWN, because a head slice that cannot be seen is not")
+print("      a head slice that is absent.")
+
 print("\nAND THE SELF-TEST MUST COVER BOTH SCANS")
 import inspect                                                   # noqa: E402
 _src = inspect.getsource(avu.self_test)
