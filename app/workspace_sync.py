@@ -189,6 +189,19 @@ def locator_contradiction(rel_path: str, content: str) -> str:
     is the case with no benign reading -- nothing legitimately writes a web page
     into a .csv -- and it is where the measured population sits.
     """
+    # SIZES HERE ARE CHARACTERS, NOT BYTES, AND THE MESSAGE SAYS SO.
+    #
+    # `content` is already decoded, so len() counts CHARACTERS. Measured
+    # 2026-09-22: I published CPI.csv at "28,898 bytes" when the file is 28,936
+    # bytes -- 38 short, because the page carries multi-byte UTF-8. Worse, I
+    # made "the two files are within ONE BYTE of each other" the centrepiece of
+    # a finding, and both figures were wrong by the same 38, so the difference
+    # survived by accident and described my decoder rather than the pages.
+    #
+    # Same class as a MiB value labelled MB: a magnitude reported in a unit it
+    # was not measured in. The caller has the decoded string and cannot recover
+    # the byte count from it, so the honest fix is to NAME the unit correctly
+    # rather than to guess at bytes.
     ext = os.path.splitext(rel_path)[1].lower()
     if ext not in _PROMISES_DATA:
         return ""
@@ -199,7 +212,7 @@ def locator_contradiction(rel_path: str, content: str) -> str:
     import re as _re
     m = _re.search(r"<title[^>]*>(.*?)</title>", content[:4000], _re.I | _re.S)
     title = m.group(1).strip()[:80] if m else ""
-    return ("named %s but the bytes are an HTML PAGE (%d bytes%s). The fetch "
+    return ("named %s but the bytes are an HTML PAGE (%d chars%s). The fetch "
             "returned a web page where data was expected -- do not parse this "
             "as %s, and treat the data as MISSING."
             % (ext, len(content),

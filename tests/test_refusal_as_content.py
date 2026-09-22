@@ -202,6 +202,17 @@ check("the original file is untouched", open(fp).read() == OPERATOR)
 check("the marker itself would publish normally (it is not a refusal)",
       F.refusal_envelope(mt) is None)
 
+print("\nUNIT HONESTY — a decoded length is CHARACTERS, never bytes")
+_utf8 = '{"error":"\u8fd4\u56de\u6570\u636e\u4e3a\u7a7a","credential_presented":false}'
+_msg = F.refusal_envelope(_utf8)
+check("a multi-byte body is still detected", bool(_msg))
+check("and the size is reported as CHARS, not bytes",
+      bool(_msg) and "-char" in _msg and "-byte" not in _msg)
+check("the char count is len(str), which is SHORTER than the byte count",
+      len(_utf8) < len(_utf8.encode("utf-8")),
+      "%d chars vs %d bytes" % (len(_utf8), len(_utf8.encode("utf-8"))))
+_loc = LC_UNIT = None
+
 print("\nLOCATOR CONTRADICTION — rho's class: the body is not the document")
 from app.workspace_sync import locator_contradiction as LC
 check("an error PAGE saved as .csv is flagged",
@@ -213,6 +224,8 @@ check("a page with NO title still flags, and says so",
       bool(_n) and "no title at all" in _n)
 check("the message tells the reader to treat the data as MISSING",
       "MISSING" in (LC("a.csv", "<html><head>x</head>") or ""))
+check("the locator message also says CHARS rather than bytes",
+      "chars" in (LC("a.csv", "<html><head>x</head>") or ""))
 
 print("\n  and the deliberate MISSES, which are ai-institute's over-block rule")
 check("real CSV is clean", LC("x.csv", "date,value\n2026-01,3.1\n") == "")

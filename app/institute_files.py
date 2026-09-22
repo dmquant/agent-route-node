@@ -158,6 +158,11 @@ def parse_block(prompt: str):
 
 # The largest body that could plausibly be a refusal rather than a document.
 # The one the operator reported was 236 bytes.
+#
+# NOTE THE UNIT: `text` is decoded, so this cap and every size this module
+# prints are CHARACTERS. They coincide with bytes only for pure ASCII. This is
+# stated because the same module published a character count as a byte count on
+# 2026-09-22 and built a finding on the difference.
 _REFUSAL_MAX = 4096
 
 # Members that appear BESIDE an error in a service refusal and essentially never
@@ -275,7 +280,7 @@ def refusal_envelope(text: str):
                    or d.get("reason") or d.get("detail") or "")
             why = why if isinstance(why, str) else ""
             return ("this file's CONTENT declares its own failure: %r is false in a "
-                    "%d-byte JSON body%s. The service answered and said it did NOT "
+                    "%d-char JSON body%s. The service answered and said it did NOT "
                     "succeed. Do NOT treat this as the document; say it is missing."
                     % (flag, len(text),
                        " — %s=%r" % ("reason", why[:120]) if why else
@@ -309,7 +314,7 @@ def refusal_envelope(text: str):
         return None
     shape = (", also carries " + ", ".join(siblings)) if siblings else \
             " (a BARE envelope: its only members are %s)" % ", ".join(sorted(d))
-    return ("this file's CONTENT is a %d-byte JSON refusal, not a document — "
+    return ("this file's CONTENT is a %d-char JSON refusal, not a document — "
             "error=%r%s. A fetch that failed was saved as the "
             "file. Do NOT treat this as the report; say it is missing."
             % (len(text), err[:120], shape))
