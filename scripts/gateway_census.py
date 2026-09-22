@@ -20,6 +20,7 @@ Read-only against the gateway: initialize + tools/list, no tools/call. Reads the
 endpoint and credential from the agy registry; prints neither.
 """
 import datetime
+import hashlib
 import json
 import os
 import sys
@@ -48,6 +49,23 @@ def _endpoint(server: str = "ros-gateway"):
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
     })
     return url, headers
+
+
+def _key_fingerprint(headers):
+    """sha256 prefix of the credential, never the credential.
+
+    epistates 49f62ef2-3ec8-4785-acac-0d3657e3ad23: a capture without its seat is
+    not comparable. `seat` here was the machine's hostname, which is not the same
+    thing -- one host can hold two keys, and tools/list is scoped to the KEY. Two
+    captures from the same box under different credentials would have compared as
+    one seat and produced a false delta of exactly the kind this file exists to
+    prevent.
+    """
+    auth = [v for k, v in headers.items()
+            if k.lower() in ("authorization", "x-admin-token", "x-api-key")]
+    if not auth:
+        return None
+    return hashlib.sha256("|".join(sorted(auth)).encode()).hexdigest()[:12]
 
 
 def _rpc(url, headers, method, params=None, session=None, ident=1):
@@ -86,10 +104,13 @@ def census():
         namespaces[ns] = namespaces.get(ns, 0) + 1
     return {
         "measured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-        # The seat is part of the measurement: tools/list is entitlement-scoped,
-        # so two seats disagreeing is not a contradiction.
+        # The seat is part of the measurement: tools/list is entitlement-scoped
+        # (measured 2026-09-22 against ros-gateway -- real key 92 tools, garbage
+        # key 401, no key 401), so two seats disagreeing is not a contradiction.
+        # A seat is the TRIPLE, not the hostname.
         "seat": os.uname().nodename.split(".")[0],
         "endpoint_host": urllib.parse.urlparse(url).hostname,
+        "key_fingerprint": _key_fingerprint(headers),
         "total": len(tools),
         "namespaces": namespaces,
         "tools": args,
@@ -115,70 +136,98 @@ def report(now, prev):
     if prev is None:
         print("no previous census -- this is the BASELINE; deltas are nameable from here on")
         return
-    cross_seat = prev["seat"] != now["seat"]
-    if cross_seat:
-        # Not a defect, but the delta is then a difference of ENTITLEMENT as much
-        # as of time, and saying so is cheaper than discovering it later.
-        print("⚠ previous census was taken from seat %r, this one from %r -- the delta "
-              "below mixes time with entitlement" % (prev["seat"], now["seat"]))
+    print("--- vs %s (seat=%s) ---" % (prev["measured_at"], prev["seat"]))
 
-    old_raw, new_raw = set(prev["tools"]), set(now["tools"])
-    print("--- delta vs %s ---" % prev["measured_at"])
+    # A SEAT IS A TRIPLE, AND A DELTA ACROSS SEATS IS REFUSED, NOT WARNED ABOUT.
+    #
+    # epistates 49f62ef2-3ec8-4785-acac-0d3657e3ad23, generalising this file's own
+    # failure: "a warning must be right about WHY; a refusal only has to be right
+    # about WHETHER." The previous version of this function knew the seats differed
+    # and did not know what that would do to the delta -- and it warned, naming
+    # entitlement, when the corruption was naming. A warning that misdiagnoses is
+    # worse than silence, because it supplies a cause the reader stops looking past.
+    #
+    # So the delta is refused across seats. But a refusal is not the whole answer,
+    # because the cross-seat comparison is what closed 0f1dd12d's residual: another
+    # estate published the NAME it sees and this estate held the set. Refusing that
+    # outright would have cost the room its best result of the night.
+    #
+    # The two are different claims and only one needs the seats to match:
+    #   DELTA          "this changed between t1 and t2"      needs ONE seat
+    #   CORRESPONDENCE "these two names are the same tool"   IS the cross-seat question
+    # So: refuse the delta, compute the correspondence, and state its BASIS so a
+    # reader can reject it. The basis is a guess -- that "__" separates a namespace
+    # at both seats -- and a guess that is stated can be refused by someone who
+    # knows better, while a guess inside a subtraction cannot.
+    def _seat(c):
+        return (c.get("seat"), c.get("endpoint_host"), c.get("key_fingerprint"))
 
-    # Compare on NORMALISED names when the seats differ.
-    #
-    # epistates cebae8f8-81a7-4378-9040-e8da4bb0376c: the gateway serves the same
-    # tool as `research_projects_list` at one seat and `institute__research_projects_list`
-    # at another. The set difference is structural and correct; the KEY it runs on
-    # is a naming convention that is not. Compared raw, two censuses of an
-    # UNCHANGED server report every tool added and every tool removed -- on the
-    # real numbers, 57 and 57 from an instrument built to name a movement of one.
-    #
-    # This is the shape rho reported in 445f16ab-e79e-47a1-8d08-78e8ba90eb82 from
-    # the other side: a structural detector with something non-structural sitting
-    # in the path that decides what it is applied to. There it was a vocabulary in
-    # an exemption; here it is a convention in a key.
-    #
-    # DIRECTION, since it decides what this may be used for: normalising can merge
-    # two genuinely different tools that differ only by prefix, and that is a FALSE
-    # NEGATIVE -- a real change reported as none, the dangerous direction for a
-    # change detector. So collisions are printed, never silently merged, and the
-    # raw delta is printed too whenever normalisation changed the answer.
-    def norm(n):
+    def _norm(n):
         return n.rsplit("__", 1)[-1]
 
-    if cross_seat:
-        collisions = []
-        for side, names in (("previous", old_raw), ("current", new_raw)):
-            seen = {}
-            for n in names:
-                seen.setdefault(norm(n), []).append(n)
-            collisions += [(side, k, v) for k, v in seen.items() if len(v) > 1]
-        for side, key, names in sorted(collisions):
-            print("  ⚠ COLLISION in the %s census: %s all normalise to %r -- the "
-                  "normalised delta below CANNOT see a change among them"
-                  % (side, ", ".join(sorted(names)), key))
-        old_key = {norm(n): n for n in old_raw}
-        new_key = {norm(n): n for n in new_raw}
-        old, new = set(old_key), set(new_key)
-        if (new - old, old - new) != (new_raw - old_raw, old_raw - new_raw):
-            print("  (names normalised across seats: %d raw added / %d raw removed "
-                  "became %d / %d)" % (len(new_raw - old_raw), len(old_raw - new_raw),
-                                       len(new - old), len(old - new)))
-        label = lambda k, d: d[k]
-    else:
-        old_key = {n: n for n in old_raw}
-        new_key = {n: n for n in new_raw}
-        old, new = old_raw, new_raw
-        label = lambda k, d: k
+    a, b = _seat(prev), _seat(now)
+    old_raw, new_raw = set(prev["tools"]), set(now["tools"])
 
-    print("  added:   %s" % (", ".join(label(k, new_key) for k in sorted(new - old)) or "none"))
-    print("  removed: %s" % (", ".join(label(k, old_key) for k in sorted(old - new)) or "none"))
-    for key in sorted(new & old):
-        before, after = prev["tools"][old_key[key]], now["tools"][new_key[key]]
+    if a[2] is None or b[2] is None:
+        # Partial provenance: seat+endpoint but no key. Not bare -- epistates
+        # refuses a bare legacy list outright and is right to -- but not verified
+        # either, and the difference must not be silently rounded to "same".
+        same = a[:2] == b[:2]
+        print("  ⚠ one capture predates key provenance (no fingerprint). Same host and "
+              "endpoint: %s. The key is UNVERIFIED, so a same-seat reading here is "
+              "PRESUMED, not measured." % ("yes" if same else "NO"))
+        comparable = same
+    else:
+        comparable = a == b
+
+    if not comparable:
+        print("  DELTA REFUSED -- these captures are from different seats:")
+        print("    prev  host=%s endpoint=%s key=%s" % a)
+        print("    now   host=%s endpoint=%s key=%s" % b)
+        print("    tools/list is entitlement-scoped and names differ by seat, so a "
+              "subtraction across them reports movement that did not happen.")
+        matched = {n: _norm(n) for n in new_raw}
+        rev = {}
+        for n, k in matched.items():
+            rev.setdefault(k, []).append(n)
+        pairs, only_prev, only_now, ambiguous = [], [], [], []
+        for n in sorted(old_raw):
+            k = _norm(n)
+            cands = rev.get(k, [])
+            if len(cands) == 1:
+                pairs.append((n, cands[0]))
+            elif len(cands) > 1:
+                ambiguous.append((n, sorted(cands)))
+            else:
+                only_prev.append(n)
+        seen = {c for _, c in pairs} | {c for _, cs in ambiguous for c in cs}
+        only_now = sorted(new_raw - seen)
+        print("  CORRESPONDENCE (basis: names matched on the segment after the last "
+              "'__', which ASSUMES '__' separates a namespace at both seats)")
+        print("    matched      %d" % len(pairs))
+        for n, m in pairs[:4]:
+            if n != m:
+                print("      %s  <->  %s" % (n, m))
+        if ambiguous:
+            print("    AMBIGUOUS    %d -- one name at the earlier seat matches several here" % len(ambiguous))
+            for n, cs in ambiguous[:4]:
+                print("      %s  <->  %s" % (n, ", ".join(cs)))
+        print("    only in prev %d%s" % (len(only_prev),
+              ("  " + ", ".join(only_prev[:4])) if only_prev else ""))
+        print("    only in now  %d%s" % (len(only_now),
+              ("  " + ", ".join(only_now[:4])) if only_now else ""))
+        print("    a name present at one seat and absent at the other is an "
+              "ENTITLEMENT difference OR a change over time, and this cannot "
+              "separate them. That is why the delta is refused.")
+        return
+
+    print("  added:   %s" % (", ".join(sorted(new_raw - old_raw)) or "none"))
+    print("  removed: %s" % (", ".join(sorted(old_raw - new_raw)) or "none"))
+    for name in sorted(new_raw & old_raw):
+        before, after = prev["tools"][name], now["tools"][name]
         if before != after:
             print("  args changed on %s: +%s -%s" % (
-                new_key[key], sorted(set(after) - set(before)), sorted(set(before) - set(after))))
+                name, sorted(set(after) - set(before)), sorted(set(before) - set(after))))
 
 
 def main(argv):

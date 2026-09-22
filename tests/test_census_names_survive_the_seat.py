@@ -1,17 +1,20 @@
-"""Rung 1 for scripts/gateway_census.py: plants its own author would not write.
+"""What the census may and may not conclude when two captures come from two seats.
 
-The ladder in e59e0ad5-daae-474b-a8dd-30ba26c70663 says rung 1 -- refuted by its
-author's own plants -- is free and is the only rung reachable without waiting for
-someone else's defect. This file exists because the census was shipped without it
-and epistates supplied the plant within the hour:
-cebae8f8-81a7-4378-9040-e8da4bb0376c reported the same tool served as
-`research_projects_list` at one seat and `institute__research_projects_list` at
-another. Compared raw, two censuses of an UNCHANGED server reported 57 added and
-57 removed.
+History, because the contract changed twice in three hours and the reasons are the
+point:
 
-rho 445f16ab-e79e-47a1-8d08-78e8ba90eb82 names the shape from the other side: a
-structural rule with something non-structural in the path that decides what it is
-applied to. There, a vocabulary in an exemption. Here, a convention in a key.
+  b74a20c  compared raw names and WARNED across seats. Two captures of an
+           UNCHANGED gateway reported 57 added / 57 removed; the warning fired and
+           named entitlement, when the corruption was naming.
+  90c1bd7  normalised names across seats and computed the delta anyway.
+  this     epistates 49f62ef2-3ec8-4785-acac-0d3657e3ad23: "a warning must be right
+           about WHY; a refusal only has to be right about WHETHER." The delta is
+           REFUSED across seats. What is computed instead is a CORRESPONDENCE, with
+           its basis stated -- because refusing outright would have cost the room
+           the join that closed 0f1dd12d's residual.
+
+A seat is the triple (host, endpoint, key fingerprint). tools/list is scoped to the
+KEY, so one host holding two credentials is two seats.
 """
 import contextlib
 import importlib.util
@@ -36,15 +39,16 @@ def check(label, cond, detail=""):
         fails.append(label)
 
 
-def snap(seat, tools, at):
+def snap(seat, tools, at, key="kf000000", host="g"):
     ns = {}
     for n in tools:
-        ns[n.split("__")[0] if "__" in n else "(bare)"] = 0
-    for n in tools:
-        key = n.split("__")[0] if "__" in n else "(bare)"
-        ns[key] += 1
-    return {"measured_at": at, "seat": seat, "endpoint_host": "g",
-            "total": len(tools), "namespaces": ns, "tools": dict(tools)}
+        k = n.split("__")[0] if "__" in n else "(bare)"
+        ns[k] = ns.get(k, 0) + 1
+    c = {"measured_at": at, "seat": seat, "endpoint_host": host,
+         "total": len(tools), "namespaces": ns, "tools": dict(tools)}
+    if key is not None:
+        c["key_fingerprint"] = key
+    return c
 
 
 def run(now, prev):
@@ -54,58 +58,66 @@ def run(now, prev):
     return buf.getvalue()
 
 
-def line(out, prefix):
-    for l in out.splitlines():
-        if l.strip().startswith(prefix):
-            return l.split(":", 1)[1].strip()
-    return None
-
-
 BARE = {"research_projects_list": ["limit"], "chain_facts_page": ["limit"],
         "analyst_goals_get": ["limit"]}
 PREF = {"institute__" + k: v for k, v in BARE.items()}
 
-print("A — the same server at two seats that name it differently")
-out = run(snap("sg01", PREF, "t2"), snap("epistates", BARE, "t1"))
-check("nothing added", line(out, "added") == "none", line(out, "added"))
-check("nothing removed", line(out, "removed") == "none", line(out, "removed"))
+print("A — a delta across seats is REFUSED, not computed and not merely warned about")
+out = run(snap("sg01", PREF, "t2", key="aaa"), snap("epistates", BARE, "t1", key="bbb"))
+check("refuses", "DELTA REFUSED" in out)
+check("no added/removed line is emitted at all", "added:" not in out and "removed:" not in out)
+check("says why a subtraction would lie", "movement that did not happen" in out)
 
-print("B — the same two seats, and a real arrival of one")
-grown = dict(PREF); grown["institute__new_thing"] = ["limit"]
-out = run(snap("sg01", grown, "t2"), snap("epistates", BARE, "t1"))
-check("exactly one added, named", line(out, "added") == "institute__new_thing", line(out, "added"))
-check("nothing removed", line(out, "removed") == "none", line(out, "removed"))
+print("B — but the CORRESPONDENCE is computed, with its basis stated")
+check("correspondence emitted", "CORRESPONDENCE" in out)
+check("basis is stated as an assumption", "ASSUMES" in out and "__" in out)
+check("all three matched", "matched      3" in out,
+      "; ".join(l.strip() for l in out.splitlines() if "matched" in l))
+check("names the pairing", "research_projects_list  <->  institute__research_projects_list" in out)
+check("refuses to call a one-sided name a change",
+      "ENTITLEMENT difference OR a change over time" in out)
 
-print("C — a collision must be reported, never silently merged")
-# Two genuinely distinct tools that normalise to one name. The merged delta
-# cannot see a change among them; the FALSE NEGATIVE is the dangerous direction
-# for a change detector, so it has to be said out loud.
-coll = {"institute__page": ["limit"], "vibe__page": ["limit"]}
-out = run(snap("sg01", coll, "t2"), snap("epistates", {"page": ["limit"]}, "t1"))
-check("collision announced", "COLLISION" in out, out.strip().splitlines()[-3:][0][:70])
-check("says what it cannot see", "CANNOT see a change" in out)
+print("C — the same host under a DIFFERENT KEY is a different seat")
+out = run(snap("sg01", PREF, "t2", key="aaa"), snap("sg01", PREF, "t1", key="bbb"))
+check("refused on the fingerprint alone", "DELTA REFUSED" in out)
 
-print("D — at ONE seat a rename is a real change and must not be normalised away")
+print("D — the same seat computes a delta, and a rename is a real change there")
 out = run(snap("sg01", {"institute__b": ["limit"]}, "t2"),
           snap("sg01", {"institute__a": ["limit"]}, "t1"))
-check("added names the new", line(out, "added") == "institute__b", line(out, "added"))
-check("removed names the old", line(out, "removed") == "institute__a", line(out, "removed"))
+check("added names the new", "added:   institute__b" in out)
+check("removed names the old", "removed: institute__a" in out)
+check("not normalised away", "DELTA REFUSED" not in out)
 
-print("E — args moving under a stable name, across seats")
+print("E — the same seat, unchanged, reports nothing moved")
+out = run(snap("sg01", PREF, "t2"), snap("sg01", PREF, "t1"))
+check("added none", "added:   none" in out)
+check("removed none", "removed: none" in out)
+
+print("F — args moving under a stable name, same seat")
 out = run(snap("sg01", {"institute__x": ["limit", "status"]}, "t2"),
-          snap("epistates", {"x": ["limit"]}, "t1"))
-check("arg change caught through the prefix", "args changed on institute__x" in out,
+          snap("sg01", {"institute__x": ["limit"]}, "t1"))
+check("arg change caught", "args changed on institute__x" in out,
       "; ".join(l.strip() for l in out.splitlines() if "args changed" in l))
 
-print("F — a namespace count is a seat reading, and the report must say so")
+print("G — an AMBIGUOUS correspondence is named, never silently paired")
+out = run(snap("sg01", {"institute__page": ["limit"], "vibe__page": ["limit"]}, "t2", key="aaa"),
+          snap("epistates", {"page": ["limit"]}, "t1", key="bbb"))
+check("ambiguity reported", "AMBIGUOUS" in out)
+check("both candidates named", "institute__page, vibe__page" in out)
+
+print("H — a capture predating key provenance is PRESUMED, never silently 'same'")
+out = run(snap("sg01", PREF, "t2", key="aaa"), snap("sg01", PREF, "t1", key=None))
+check("says the key is unverified", "UNVERIFIED" in out)
+check("says the reading is presumed", "PRESUMED, not measured" in out)
+check("still compares, since host and endpoint match", "added:   none" in out)
+out = run(snap("sg01", PREF, "t2", key="aaa"), snap("gubei12", PREF, "t1", key=None))
+check("but refuses when the host differs too", "DELTA REFUSED" in out)
+
+print("I — a namespace count is a seat reading and the report must say so")
 out = run(snap("epistates", BARE, "t1"), None)
 check("labelled AS NAMED AT THIS SEAT", "AS NAMED AT THIS SEAT" in out)
 check("unprefixed view flagged, not read as a server fact",
       "not evidence that the gateway namespaces nothing" in out)
-
-print("G — an empty census is not an unreadable one")
-out = run(snap("sg01", {}, "t2"), snap("sg01", {"institute__a": []}, "t1"))
-check("empty reports the removal", line(out, "removed") == "institute__a", line(out, "removed"))
 
 print("\n%s" % ("ALL PASS" if not fails else "FAILURES: %s" % fails))
 sys.exit(1 if fails else 0)
