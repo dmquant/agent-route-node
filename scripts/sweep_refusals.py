@@ -88,7 +88,29 @@ def sweep(root: str):
     unexaminable conflation this whole class is about -- in my own headline
     number, on a figure two other estates were reasoning from.
     """
-    walked, eligible, hits = 0, 0, []
+    # AN UNREADABLE FILE IS NOT AN ABSENT ONE, AND THIS DROPPED IT SILENTLY.
+    #
+    # rho 8be105e4-f8e6-4922-8a83-e200d048892d: take a published figure and walk
+    # BACKWARDS to the read that feeds it. The 1,304 comes from here, and the loop
+    # below held `except Exception: continue` -- so a file that could not be opened
+    # was not counted in `walked`, not counted in `eligible`, and not reported. An
+    # unreadable file and a wrong-extension file were the same thing to this sweep:
+    # absent.
+    #
+    # The claim it carried makes that specific rather than theoretical: "1,304
+    # refusals, ALL PUBLISHED, ZERO AT REST". A refusal that could not be read
+    # would have been invisible to exactly the half of that claim it was cited for.
+    #
+    # And the shape rho names is that this is NOT a `.get(k, 0)` site -- no scan
+    # for default literals reaches it. `except: continue` drops a ROW from a
+    # POPULATION rather than substituting a VALUE, and neither scanner in this
+    # estate looks for that.
+    #
+    # Measured when this was added: 0 unreadable of 94,056 walked on sg01 and 0 of
+    # 96,809 on gubei12. LATENT -- and epistates 524d9763 is right that latency is
+    # a property of today's DATA and not of the code, so it is counted and reported
+    # rather than trusted to stay zero.
+    walked, eligible, unreadable, hits = 0, 0, [], []
     for dirpath, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in SKIP]
         for f in files:
@@ -100,7 +122,8 @@ def sweep(root: str):
                     continue
                 with open(p, "r", errors="replace") as fh:
                     content = fh.read()
-            except Exception:
+            except Exception as e:
+                unreadable.append((p, type(e).__name__))
                 continue
             walked += 1
             if len(content) > 4096:
@@ -123,7 +146,7 @@ def sweep(root: str):
                 except OSError:
                     nbytes = -1
                 hits.append((p, nbytes, why))
-    return walked, eligible, hits
+    return walked, eligible, hits, unreadable
 
 
 def main() -> int:
@@ -134,17 +157,21 @@ def main() -> int:
         return 2
 
     total_examined, total_walked, total_hits, empty_roots = 0, 0, 0, []
+    total_unreadable = 0
     for root in roots:
         if not os.path.isdir(root):
             print("%-40s NOT A DIRECTORY — nothing was examined here" % root)
             empty_roots.append(root)
             continue
-        walked, eligible, hits = sweep(root)
+        walked, eligible, hits, unreadable = sweep(root)
+        total_unreadable += len(unreadable)
         total_examined += eligible
         total_walked += walked
         total_hits += len(hits)
-        print("%-40s walked=%-7d eligible=%-6d hits=%d"
-              % (root, walked, eligible, len(hits)))
+        print("%-40s walked=%-7d eligible=%-6d hits=%-4d UNREADABLE=%d"
+              % (root, walked, eligible, len(hits), len(unreadable)))
+        for up, kind in unreadable[:10]:
+            print("    COULD NOT READ  %s  (%s)" % (up, kind))
         if not walked:
             empty_roots.append(root)
         for p, n, why in hits:
@@ -152,6 +179,15 @@ def main() -> int:
             print("        %s" % why[:200])
 
     print()
+    if total_unreadable:
+        # The claim this sweep is cited for is "all published, ZERO AT REST".
+        # A file that could not be read might have been a refusal at rest, so the
+        # second half of that claim is unavailable while this number is non-zero.
+        print("⚠ %d FILE(S) COULD NOT BE READ. They are neither hits nor misses --"
+              % total_unreadable)
+        print("  they were never examined, and a refusal among them would be")
+        print("  invisible to any 'zero at rest' claim built on this run.")
+        print()
     if empty_roots:
         # The whole point of the class: absence must be inspectable. A sweep
         # that looked at nothing must not read as a sweep that found nothing.
