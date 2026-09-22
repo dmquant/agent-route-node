@@ -9,14 +9,25 @@ import http.server, importlib, json, os, socket, sys, threading
 sys.path.insert(0, os.getcwd())
 
 HITS = {"a": 0, "b": 0}
+# The node's own one-shot credential probe is NOT hand traffic, and the two must
+# not be counted together. mcp_config.verify_server asks every server it is about
+# to hand over whether it will serve this credential -- added after sg01 spent a
+# window handing every hand a server that 401ed -- and it identifies itself as
+# `agent-route-node` in clientInfo. The isolation this file guards is that a
+# HAND's traffic reaches only its own upstream; a node-side probe reaching the
+# server it is probing is the feature working.
+PROBES = {"a": 0, "b": 0}
 
 
 def fake_upstream(key):
     class H(http.server.BaseHTTPRequestHandler):
         def do_POST(self):
             n = int(self.headers.get("Content-Length") or 0)
-            self.rfile.read(n)
-            HITS[key] += 1
+            raw = self.rfile.read(n)
+            if b'"agent-route-node"' in raw:
+                PROBES[key] += 1
+            else:
+                HITS[key] += 1
             body = b'{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}'
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -71,7 +82,14 @@ check("AI_INSTITUTE_MCP_URL restored", os.environ.get("AI_INSTITUTE_MCP_URL") ==
 check("ROS_GATEWAY_MCP_URL restored", os.environ.get("ROS_GATEWAY_MCP_URL") == URL_B,
       os.environ.get("ROS_GATEWAY_MCP_URL", "")[:44])
 check("control reached the GATEWAY upstream", HITS["b"] >= 1, "hits=%d" % HITS["b"])
-check("nothing leaked to the institute upstream", HITS["a"] == 0, "hits=%d" % HITS["a"])
+check("no HAND traffic leaked to the institute upstream", HITS["a"] == 0,
+      "hand hits=%d, node credential probes=%d" % (HITS["a"], PROBES["a"]))
+# CONTROL: the split above is only meaningful if the probe classifier can tell the
+# two apart at all. If nothing was ever classified as a probe, `HITS["a"] == 0`
+# may be passing because the marker matches everything.
+check("the probe/hand split actually separated something",
+      (PROBES["a"] + PROBES["b"]) >= 1,
+      "probes a=%d b=%d" % (PROBES["a"], PROBES["b"]))
 
 print("\n%s" % ("ALL PASS" if not fails else "FAILURES: %s" % fails))
 sys.exit(1 if fails else 0)

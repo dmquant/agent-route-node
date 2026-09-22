@@ -40,7 +40,10 @@ the last 500 fleet tasks. It gets an empty plan and a note.
 """
 import json
 import logging
+import hashlib
 import os
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -607,6 +610,103 @@ _WRITERS = {"opencode": _prepare_opencode, "claude": _prepare_claude,
             "codex": _prepare_codex, "agy": _prepare_agy}
 
 
+# A SERVER THAT 401s IS WORSE THAN NO SERVER, AND THIS NODE HAD NO WAY TO TELL.
+#
+# Measured live on sg01, 2026-09-22 23:2x: the operator set AI_INSTITUTE_MCP_URL
+# and AI_INSTITUTE_MCP_KEY and did not set AI_INSTITUTE_MCP_HEADER. `settings()`
+# resolved happily, defaulted the header to Authorization, defaulted the scheme to
+# "Bearer " because the header was Authorization -- and every call 401s. The SAME
+# key sent as `X-Admin-Token` returns 57 tools.
+#
+#   before the URL was set   settings() -> None, no hand got a server   A CLEAN ABSENCE
+#   after                    every hand gets a server that 401s          WORSE
+#
+# And the 401 from the correct key under the wrong header is byte-identical to the
+# 401 from a zeroed key -- I ran both. So the hand cannot tell a misconfiguration
+# from a revoked credential, and neither could this node.
+#
+# `settings()` already refuses a URL with no credential for exactly this reason.
+# The guard was written for a MISSING credential and the header is a GUESS, which
+# the defaulted-header warning admits and then proceeds anyway.
+#
+# So: ask the endpoint, once per (server, url, credential), before handing the
+# config to a model.
+_CRED_VERDICT: dict = {}
+
+
+def _cred_key(cfg: dict) -> tuple:
+    """The triple, not the name. A rotated credential must re-verify.
+
+    epistates 49f62ef2-3ec8-4785-acac-0d3657e3ad23, on a census that compared
+    across seats: a capture without its seat is not comparable, and a seat is the
+    triple (host, endpoint, key fingerprint) rather than any one of them. The same
+    applies to a cached verdict -- keyed on the server NAME it would survive the
+    operator fixing the very thing it recorded.
+    """
+    return (cfg.get("name"), cfg.get("url"), cfg.get("header"), cfg.get("scheme"),
+            hashlib.sha256((cfg.get("key") or "").encode()).hexdigest()[:12])
+
+
+def verify_server(cfg: dict, timeout: float = 8.0) -> tuple:
+    """(verdict, detail) where verdict is "ok" | "refused" | "unknown".
+
+    ONLY AN EXPLICIT 401/403 DISQUALIFIES. A timeout, a DNS failure, a 5xx or a
+    malformed body all return "unknown" and the server is still offered.
+
+    This is epistates' rule in 49f62ef2-3ec8-4785-acac-0d3657e3ad23 -- "a warning
+    must be right about WHY; a refusal only has to be right about WHETHER" --
+    pointed at a refusal this time. A 401 is the endpoint stating that it will not
+    serve this credential, which is evidence. A timeout is the absence of evidence,
+    and refusing on it would take a working node off MCP because a network blipped.
+    """
+    key = _cred_key(cfg)
+    if key in _CRED_VERDICT:
+        return _CRED_VERDICT[key]
+    hdrs = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        # Cloudflare answers 403/1010 to an unusual User-Agent, which reads as an
+        # auth failure and is not one -- so a bare urllib UA would make this
+        # function invent the refusal it exists to detect.
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+        cfg["header"]: (cfg.get("scheme") or "") + cfg["key"],
+    }
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2024-11-05", "capabilities": {},
+        "clientInfo": {"name": "agent-route-node", "version": "1"}}}).encode()
+    try:
+        req = urllib.request.Request(cfg["url"], data=body, headers=hdrs, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp.read()
+        verdict = ("ok", "initialize accepted")
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            verdict = ("refused", "HTTP %d" % e.code)
+        else:
+            verdict = ("unknown", "HTTP %d — not an auth refusal" % e.code)
+    except Exception as e:
+        verdict = ("unknown", type(e).__name__)
+    _CRED_VERDICT[key] = verdict
+    return verdict
+
+
+def _header_advice(cfg: dict) -> str:
+    """What to change, named -- because a refusal that does not say is a dead end.
+
+    Deliberately NOT a claim about which header is right: this node cannot know
+    that. It reports what was sent, whether it was declared or defaulted, and the
+    one other header this federation is known to use.
+    """
+    declared = bool((os.getenv(cfg.get("url_var", "").replace("_URL", "_HEADER")) or "").strip()) \
+        if cfg.get("url_var") else False
+    return ("sent %r%s; it was %s. The institute surface in this federation accepts "
+            "X-Admin-Token with an EMPTY scheme — if that is this endpoint, set "
+            "%s=X-Admin-Token in the data-dir .env"
+            % (cfg["header"], (" with scheme %r" % cfg["scheme"]) if cfg.get("scheme") else "",
+               "declared" if declared else "DEFAULTED, not declared",
+               (cfg.get("url_var", "AI_INSTITUTE_MCP_URL")).replace("_URL", "_HEADER")))
+
+
 def prepare(hand: str, workspace_dir: str) -> McpPlan:
     """Configure `hand` to reach the institute MCP for this one task.
 
@@ -643,6 +743,25 @@ def prepare(hand: str, workspace_dir: str) -> McpPlan:
         _logger.info("MCP %s: NOT CONFIGURED — %s; servers exist on this node but "
                      "none lists this hand", hand, note)
         return McpPlan(note=note)
+    kept = []
+    for cfg in servers:
+        verdict, detail = verify_server(cfg)
+        if verdict == "refused":
+            _logger.error("MCP %s: server %r REFUSED THE NODE'S CREDENTIAL (%s) — "
+                          "withholding it rather than handing the hand a server that "
+                          "401s inside its tool loop. %s",
+                          hand, cfg["name"], detail, _header_advice(cfg))
+            continue
+        if verdict == "unknown":
+            _logger.info("MCP %s: server %r could not be verified (%s) — offering it "
+                         "anyway; a refusal must be right about WHETHER, and this is "
+                         "not evidence of a bad credential", hand, cfg["name"], detail)
+        kept.append(cfg)
+    if not kept:
+        note = "every configured server refused this node's credential"
+        _logger.info("MCP %s: NOT CONFIGURED — %s", hand, note)
+        return McpPlan(note=note)
+    servers = kept
     writer = _WRITERS.get(hand)
     if not writer:
         note = f"{hand} has no per-task MCP surface yet (stage 2)"
