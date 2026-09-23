@@ -107,6 +107,23 @@ class TestTimeBasis(unittest.TestCase):
         self.assertEqual(b["utc_date"], "2026-03-14")
         self.assertTrue(b["differs_from_utc_date"])
         self.assertEqual(b["utc_offset"], "+08:00")
+        # tzname was unasserted, so `now.tzname() or ""` -> `and ""` survived.
+        self.assertEqual(b["tzname"], "UTC+08:00")
+
+    def test_a_NAIVE_injected_clock_reports_offset_zero_rather_than_crashing(self):
+        """`else 0` is unreachable for an aware clock, and survived as an
+        equivalent mutant until the injectable clock made it reachable.
+
+        A caller passing a naive datetime gets utcoffset() None. The module must
+        say +00:00 and an empty tzname rather than raise — and must not pretend
+        it knows a zone it was not given.
+        """
+        naive = datetime.datetime(2026, 3, 15, 7, 30)   # no tzinfo
+        utcnow = datetime.datetime(2026, 3, 14, 23, 30, tzinfo=datetime.timezone.utc)
+        b = time_basis(now=naive, utcnow=utcnow)
+        self.assertEqual(b["utc_offset_seconds"], 0)
+        self.assertEqual(b["utc_offset"], "+00:00")
+        self.assertEqual(b["tzname"], "")
 
     def test_the_default_clock_is_still_the_host(self):
         b = time_basis()
