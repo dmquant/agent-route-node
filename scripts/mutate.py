@@ -213,6 +213,28 @@ def run_tests(root, tests, timeout=120, want_output=False,
     # the same second as its predecessor is INVISIBLE to CPython's (mtime, size)
     # cache check, and the test then runs against source that was never loaded.
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    # EVERY TEST RUNS. THE FIRST VERSION RETURNED ON THE FIRST FAILURE, AND THAT
+    # MADE THE BUCKET AN ARTEFACT OF ARGUMENT ORDER.
+    #
+    # Measured on app/task_analytics.py, 138 sites, the SAME three tests:
+    #
+    #     HTTP-surface test LAST    39 assertion · 2 traceback · 97 survivors
+    #     HTTP-surface test FIRST   40 assertion · 1 traceback · 97 survivors
+    #
+    # One mutant changed bucket because a different test got to fail first. The
+    # runner was recording WHICH TEST FAILED SOONEST, not what the suite could
+    # say about the mutant — and it falsified a prediction that was actually
+    # right: through the HTTP surface alone that module has ZERO traceback
+    # kills, because entering above the application's exception handling turns
+    # a crash into a served status a test can judge.
+    #
+    # So: run them all, and classify on the STRONGEST evidence any of them
+    # produced. Assertion outranks traceback outranks nothing, because a test
+    # that JUDGED the mutant is a better description of the kill than a test
+    # that merely fell over on it. The cost is no early exit; the benefit is a
+    # bucket that does not depend on the order its arguments were typed in.
+    _RANK = {"pass": 0, "unclassified": 1, "error": 2, "assert": 3}
+    best, best_line = "pass", ""
     for t in tests:
         # start_new_session PUTS EACH TEST IN ITS OWN SESSION AND PROCESS GROUP,
         # AND THIS RUNNER KILLED ITS OWN SHELL BEFORE IT DID.
@@ -229,13 +251,15 @@ def run_tests(root, tests, timeout=120, want_output=False,
         # the instrument owes rather than a property of the tests it runs.
         p = subprocess.run([sys.executable, "-B", t], cwd=root, capture_output=True,
                            text=True, timeout=timeout, env=env, start_new_session=True)
-        if p.returncode != 0:
-            out = p.stdout + p.stderr
-            how = classify_failure(out, markers)
-            if want_output:
-                lines = [l for l in out.splitlines() if l.strip()]
-                return False, how, (lines[-1][:150] if lines else "(no output at all)")
-            return False, how
+        if p.returncode == 0:
+            continue
+        out = p.stdout + p.stderr
+        how = classify_failure(out, markers)
+        if _RANK[how] > _RANK[best]:
+            lines = [l for l in out.splitlines() if l.strip()]
+            best, best_line = how, (lines[-1][:150] if lines else "(no output at all)")
+    if best != "pass":
+        return (False, best, best_line) if want_output else (False, best)
     return (True, how, "") if want_output else (True, how)
 
 
