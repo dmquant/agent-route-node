@@ -63,10 +63,31 @@ class TestTimeBasis(unittest.TestCase):
         live = datetime.datetime.now().astimezone().utcoffset()
         self.assertEqual(b["utc_offset_seconds"], int(live.total_seconds()))
 
-    def test_it_carries_the_readers_own_check(self):
+    def test_the_readers_check_is_tested_at_BOTH_dates_not_todays(self):
+        """This assertion could only fail for 8 hours in every 24, and the
+        mutation run happened in the other 16.
+
+        Hardcoding `differs_from_utc_date` to False left the first version of
+        this test GREEN, because it compared the field against the LIVE clock at
+        09:5x local / 01:5xZ, where local and UTC dates agree. The field is only
+        false-able inside the very window it exists to announce. So the record
+        is now built from VALUES and both cases are exercised.
+        """
+        from app.timebasis import basis_from
+        same = basis_from("2026-09-23", "2026-09-23", 8 * 3600, "CST")
+        self.assertFalse(same["differs_from_utc_date"])
+        across = basis_from("2026-09-23", "2026-09-22", 8 * 3600, "CST")
+        self.assertTrue(across["differs_from_utc_date"],
+                        "the one case the field exists for")
+        self.assertEqual(across["utc_offset"], "+08:00")
+        self.assertRegex(same["utc_offset"], r"^[+-]\d{2}:\d{2}$")
+
+    def test_the_live_record_still_agrees_with_the_host(self):
         b = time_basis()
-        self.assertEqual(b["differs_from_utc_date"], b["local_date"] != b["utc_date"])
-        self.assertRegex(b["utc_offset"], r"^[+-]\d{2}:\d{2}$")
+        self.assertEqual(b["local_date"],
+                         datetime.datetime.now().strftime("%Y-%m-%d"))
+        self.assertEqual(b["utc_date"], datetime.datetime.now(
+            datetime.timezone.utc).strftime("%Y-%m-%d"))
 
     def test_the_offset_string_matches_the_seconds(self):
         b = time_basis()

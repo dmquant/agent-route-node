@@ -41,7 +41,7 @@ kind of fact that stops being true without anyone editing this file.
 """
 from datetime import datetime, timezone
 
-__all__ = ["time_basis", "fmt_offset"]
+__all__ = ["time_basis", "fmt_offset", "basis_from"]
 
 
 def fmt_offset(secs: int) -> str:
@@ -61,6 +61,40 @@ def fmt_offset(secs: int) -> str:
     return "%s%02d:%02d" % (sign, hh, mm)
 
 
+def basis_from(local_date: str, utc_date: str, offset_seconds: int, tzname: str) -> dict:
+    """The record, built from values rather than from a clock.
+
+    SPLIT OUT BECAUSE ITS TEST COULD ONLY DISCRIMINATE FOR 8 HOURS IN EVERY 24.
+
+    `differs_from_utc_date` was asserted as `local_date != utc_date` against the
+    LIVE clock. Hardcoding the field to `False` left that assertion GREEN,
+    because the run happened at 09:5x local / 01:5xZ, where the two dates agree.
+    The field is only false-able inside the very window it exists to announce —
+    local 00:00-07:59 here — so the test was structurally unable to fail for two
+    thirds of the day, and a mutation run at the wrong hour reports a pass.
+
+    rho 4cd72605-e6ff-4714-b21e-3c3b79fb1bfe and fdae24d3-a291-4c0a-9be9-ec451f1e2b8e
+    named the same shape twice in an hour: a fixture whose single literal cannot
+    express the boundary. Here the literal was the clock itself.
+    """
+    return {
+        "basis": "host local time",
+        "utc_offset": fmt_offset(offset_seconds),
+        "utc_offset_seconds": offset_seconds,
+        "tzname": tzname,
+        # THE READER'S CHECK, AND IT IS THE POINT OF THE FIELD.
+        # A consumer joining this record to a UTC timeline can compare these two
+        # without knowing anything about the host. When they differ, every bare
+        # date and hour in this payload is on the local side of a day boundary.
+        "local_date": local_date,
+        "utc_date": utc_date,
+        "differs_from_utc_date": local_date != utc_date,
+        "note": ("every bare `date`, `%Y-%m-%d` key and `%H:00` bucket in this "
+                 "payload is on this clock, not UTC. Values are not shifted — "
+                 "they are labelled, because a bare date is a unit-less quantity."),
+    }
+
+
 def time_basis() -> dict:
     """What clock this node's published dates and hour buckets are on.
 
@@ -68,21 +102,7 @@ def time_basis() -> dict:
     """
     now = datetime.now().astimezone()
     off = now.utcoffset()
-    secs = int(off.total_seconds()) if off is not None else 0
-    utc_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return {
-        "basis": "host local time",
-        "utc_offset": fmt_offset(secs),
-        "utc_offset_seconds": secs,
-        "tzname": now.tzname() or "",
-        # THE READER'S CHECK, AND IT IS THE POINT OF THE FIELD.
-        # A consumer joining this record to a UTC timeline can compare these two
-        # without knowing anything about the host. When they differ, every bare
-        # date and hour in this payload is on the local side of a day boundary.
-        "local_date": now.strftime("%Y-%m-%d"),
-        "utc_date": utc_date,
-        "differs_from_utc_date": now.strftime("%Y-%m-%d") != utc_date,
-        "note": ("every bare `date`, `%Y-%m-%d` key and `%H:00` bucket in this "
-                 "payload is on this clock, not UTC. Values are not shifted — "
-                 "they are labelled, because a bare date is a unit-less quantity."),
-    }
+    return basis_from(now.strftime("%Y-%m-%d"),
+                      datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                      int(off.total_seconds()) if off is not None else 0,
+                      now.tzname() or "")
