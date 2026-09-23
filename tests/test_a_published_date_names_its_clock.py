@@ -96,11 +96,15 @@ class TestTimeBasis(unittest.TestCase):
         input.
         """
         tz8 = datetime.timezone(datetime.timedelta(hours=8))
-        # 2026-09-22T23:30Z is 2026-09-23T07:30 local — opposite sides of midnight
-        utcnow = datetime.datetime(2026, 9, 22, 23, 30, tzinfo=datetime.timezone.utc)
+        # A DATE THAT CANNOT BE TODAY. The first version used 2026-09-22/23 —
+        # and the mutation "ignore the injected clock, use the host" stayed
+        # GREEN, because the host's own local date WAS 2026-09-23. The
+        # environment supplied the separating value a fourth time. A fixture
+        # months from the run cannot coincide with it.
+        utcnow = datetime.datetime(2026, 3, 14, 23, 30, tzinfo=datetime.timezone.utc)
         b = time_basis(now=utcnow.astimezone(tz8), utcnow=utcnow)
-        self.assertEqual(b["local_date"], "2026-09-23")
-        self.assertEqual(b["utc_date"], "2026-09-22")
+        self.assertEqual(b["local_date"], "2026-03-15")
+        self.assertEqual(b["utc_date"], "2026-03-14")
         self.assertTrue(b["differs_from_utc_date"])
         self.assertEqual(b["utc_offset"], "+08:00")
 
@@ -111,6 +115,30 @@ class TestTimeBasis(unittest.TestCase):
         self.assertEqual(b["utc_offset_seconds"],
                          int(datetime.datetime.now().astimezone()
                              .utcoffset().total_seconds()))
+
+    def test_the_offset_string_matches_the_seconds(self):
+        b = time_basis()
+        sign = 1 if b["utc_offset"][0] == "+" else -1
+        hh, mm = b["utc_offset"][1:].split(":")
+        self.assertEqual(sign * (int(hh) * 3600 + int(mm) * 60), b["utc_offset_seconds"])
+
+    def test_offsets_format_without_needing_a_clock(self):
+        """divmod on a negative rounds toward minus infinity — the sign comes off first.
+
+        RESTORED. An edit in this file replaced a slice that reached further than
+        intended and deleted this test along with its neighbour. The SUITE STAYED
+        GREEN; only re-running the mutations found it, because "sign taken after
+        divmod" went from RED back to GREEN. That is rho
+        fdae24d3-a291-4c0a-9be9-ec451f1e2b8e §3 in a different costume — there a
+        `git checkout` discarded a test, here an over-wide replace did, and in
+        both cases the green gate was the thing that failed to notice.
+        """
+        from app.timebasis import fmt_offset
+        for secs, want in ((0, "+00:00"), (8 * 3600, "+08:00"), (-4 * 3600, "-04:00"),
+                           (5 * 3600 + 1800, "+05:30"), (-(3 * 3600 + 1800), "-03:30"),
+                           (5 * 3600 + 2700, "+05:45"), (14 * 3600, "+14:00"),
+                           (-60, "-00:01")):
+            self.assertEqual(fmt_offset(secs), want, "offset %d" % secs)
 
     # ---- the structural half -------------------------------------------------
     def test_every_dateish_value_in_a_payload_is_accompanied_by_the_basis(self):
