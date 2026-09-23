@@ -51,7 +51,7 @@ def _tree(names):
 class TestTheSweepNamesWhatItSkipped(unittest.TestCase):
 
     def test_the_skipped_files_are_counted_and_their_extensions_named(self):
-        walked, eligible, hits, unreadable, skipped = _sw.sweep(_tree(SKIPPED))
+        walked, eligible, hits, unreadable, skipped, _saved = _sw.sweep(_tree(SKIPPED))
         self.assertEqual(hits, [], "none of these are admitted, which is the point")
         self.assertEqual(sum(skipped.values()), len(SKIPPED))
         for ext in (".jsonl", ".ndjson", ".out", ".result", ".response", ".err"):
@@ -60,21 +60,21 @@ class TestTheSweepNamesWhatItSkipped(unittest.TestCase):
     def test_an_identical_refusal_is_found_under_an_admitted_extension(self):
         """The control: if the detector missed these too, the skip count would be
         measuring nothing."""
-        walked, eligible, hits, unreadable, skipped = _sw.sweep(_tree(ADMITTED))
+        walked, eligible, hits, unreadable, skipped, _saved = _sw.sweep(_tree(ADMITTED))
         self.assertEqual(len(hits), len(ADMITTED))
         self.assertEqual(skipped, {})
 
     def test_the_skipped_are_in_NO_denominator_which_is_why_they_must_be_reported(self):
         """walked and eligible both exclude them -- the fact that made the silence
         dangerous rather than merely untidy."""
-        walked, eligible, hits, unreadable, skipped = _sw.sweep(_tree(SKIPPED))
+        walked, eligible, hits, unreadable, skipped, _saved = _sw.sweep(_tree(SKIPPED))
         self.assertEqual(walked, 0)
         self.assertEqual(eligible, 0)
         self.assertGreater(sum(skipped.values()), 0,
                            "a population outside every denominator must still be counted")
 
     def test_a_mixed_tree_reports_both_populations(self):
-        walked, eligible, hits, unreadable, skipped = _sw.sweep(_tree(ADMITTED + SKIPPED))
+        walked, eligible, hits, unreadable, skipped, _saved = _sw.sweep(_tree(ADMITTED + SKIPPED))
         self.assertEqual(len(hits), len(ADMITTED))
         self.assertEqual(sum(skipped.values()), len(SKIPPED))
 

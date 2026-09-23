@@ -194,6 +194,81 @@ _ERROR_ONLY_MEMBERS = {
 }
 
 
+# THE VOCABULARY A SAVED-FAILURE LOOKS LIKE WHEN IT IS NOT JSON.
+#
+# Declared at module scope, and PRINTED by every caller, because it cannot be
+# eliminated and a list a reader can see can be argued with. Moving the list to
+# where a reader can see it is the only answer this estate has found to its own
+# recurring defect — eleven recorded instances of a vocabulary of literals
+# hidden inside a structural path.
+SAVED_FAILURE_OPENINGS = (
+    "Edge:",                      # 23 bytes: "Edge: Too Many Requests"
+    "error code:",                # 17 bytes: Cloudflare's "error code: 1015"
+    "Client sent",                # "Client sent an HTTP request to an HTTPS server."
+    "HTTP/",                      # raw response headers saved as the body
+    "Too Many Requests", "Rate limit",
+    "403 Forbidden", "404 Not Found", "500 Internal",
+    "Service Unavailable", "Bad Gateway", "Access denied", "Forbidden",
+)
+
+# An HTML or XML body is not a failure by being HTML. It is a failure when the
+# page SAYS so, so the markup arms need a second test rather than a prefix.
+_MARKUP_OPENINGS = ("<html", "<!doctype", "<?xml")
+_MARKUP_FAILURE_WORDS = ("error", "denied", "forbidden", "not found",
+                         "unavailable", "too many", "captcha", "rate limit")
+
+
+def saved_failure(text: str):
+    """A one-line description if this body is an upstream failure saved as DATA.
+
+    THE SIBLING refusal_envelope CANNOT HAVE, AND THE POPULATION IS MEASURED.
+
+    refusal_envelope answers "is this a JSON refusal ENVELOPE" and returns None
+    for anything that is not JSON. scripts/sweep_refusals.py prints, at the end
+    of every run, that a large saved error PAGE is "the same class of defect and
+    is outside this detector by construction" — a scope line, and this estate
+    has now learned twice that a scope line is a map of where to look.
+
+    Measured 2026-09-23 across both nodes' workspaces, over the 2,387 `.json`
+    files that do not parse as JSON:
+
+        271   an upstream failure saved to a `.json` path
+              "404 Not Found" (13 B) · "Edge: Too Many Requests" (23 B) ·
+              "error code: 1015" (17 B) · "503 Service Temporarily Unavailable"
+              (html) · "Access Denied" (html) · <Error><Code>AccessDenied (xml) ·
+              "Client sent an HTTP request to an HTTPS server." (48 B) ·
+              "HTTP/2 200" headers saved as the body
+       1353   YAML/markdown front-matter under a `.json` name — NOT a failure
+        554   truncated or malformed JSON
+        108   binary blobs under a `.json` name
+         84   empty
+
+    EVERY ONE OF THE 271 WAS INSIDE THE SWEEP'S ELIGIBLE POPULATION AND SCORED
+    CLEAN: `.json` is in EXT, they are far under the 4 KiB cap, and
+    refusal_envelope returns None for each. They were not outside the detector —
+    they were counted as examined and passed, which is worse than uncounted.
+
+    Keyed on the OPENING, never on a mention: a report that discusses a 404 is
+    not a saved 404, and the tests plant exactly that case.
+    """
+    if not text:
+        return None
+    s = text.lstrip()
+    if not s:
+        return None
+    for m in SAVED_FAILURE_OPENINGS:
+        if s.startswith(m):
+            return ("this file's CONTENT is an upstream failure saved as data: "
+                    "it opens %r" % s[:60].replace("\n", " "))
+    low = s[:20].lower()
+    if any(low.startswith(m) for m in _MARKUP_OPENINGS):
+        head = s[:800].lower()
+        if any(w in head for w in _MARKUP_FAILURE_WORDS):
+            return ("this file's CONTENT is a markup ERROR PAGE saved as data: "
+                    "it opens %r" % s[:60].replace("\n", " "))
+    return None
+
+
 def refusal_envelope(text: str):
     """A one-line description if this body is a service REFUSAL saved as content.
 

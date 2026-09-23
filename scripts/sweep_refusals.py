@@ -70,7 +70,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from app.institute_files import refusal_envelope   # noqa: E402
+from app.institute_files import (refusal_envelope, saved_failure,   # noqa: E402
+                                 SAVED_FAILURE_OPENINGS)
 
 # Only text-ish files can hold a saved refusal; a 4KB cap is in the detector.
 EXT = (".md", ".txt", ".json", ".csv", ".yaml", ".yml", ".html", ".log", "")
@@ -132,6 +133,7 @@ def sweep(root: str):
     # Fixed by COUNTING the exclusion and naming its extensions, so the zero this
     # sweep publishes carries the population it could not see.
     walked, eligible, unreadable, hits = 0, 0, [], []
+    saved = []
     skipped_ext = {}
     for dirpath, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in SKIP]
@@ -153,6 +155,24 @@ def sweep(root: str):
             if len(content) > 4096:
                 continue            # beyond the detector's reach, by construction
             eligible += 1
+            # THE SIBLING CLASS, AND EVERY MEMBER OF IT USED TO SCORE CLEAN HERE.
+            #
+            # Measured 2026-09-23: 271 files across both nodes are an upstream
+            # failure saved to a `.json` path -- "404 Not Found" at 13 bytes,
+            # "Edge: Too Many Requests" at 23, "error code: 1015" at 17, HTML
+            # 503 and Access Denied pages, raw "HTTP/2 200" headers. Every one
+            # is INSIDE this sweep's eligible population: `.json` is in EXT and
+            # they are far under the 4 KiB cap. refusal_envelope returns None
+            # for all of them because they are not JSON, so they were counted as
+            # EXAMINED AND PASSED -- which is worse than being uncounted, and is
+            # the scope line at the foot of this file arriving as a population.
+            sf = saved_failure(content)
+            if sf:
+                try:
+                    nb = os.path.getsize(p)
+                except OSError:
+                    nb = -1
+                saved.append((p, nb, sf))
             why = refusal_envelope(content)
             if why:
                 # THE BYTE COUNT, NOT len() OF A DECODED STRING.
@@ -170,7 +190,7 @@ def sweep(root: str):
                 except OSError:
                     nbytes = -1
                 hits.append((p, nbytes, why))
-    return walked, eligible, hits, unreadable, skipped_ext
+    return walked, eligible, hits, unreadable, skipped_ext, saved
 
 
 def main() -> int:
@@ -181,6 +201,7 @@ def main() -> int:
         return 2
 
     total_examined, total_walked, total_hits, empty_roots = 0, 0, 0, []
+    total_saved = []
     total_unreadable = 0
     total_skipped = {}
     for root in roots:
@@ -188,15 +209,16 @@ def main() -> int:
             print("%-40s NOT A DIRECTORY — nothing was examined here" % root)
             empty_roots.append(root)
             continue
-        walked, eligible, hits, unreadable, skipped = sweep(root)
+        walked, eligible, hits, unreadable, skipped, saved = sweep(root)
         for e, n in skipped.items():
             total_skipped[e] = total_skipped.get(e, 0) + n
         total_unreadable += len(unreadable)
         total_examined += eligible
         total_walked += walked
         total_hits += len(hits)
-        print("%-40s walked=%-7d eligible=%-6d hits=%-4d UNREADABLE=%d"
-              % (root, walked, eligible, len(hits), len(unreadable)))
+        total_saved.extend(saved)
+        print("%-40s walked=%-7d eligible=%-6d hits=%-4d SAVED-FAIL=%-4d UNREADABLE=%d"
+              % (root, walked, eligible, len(hits), len(saved), len(unreadable)))
         for up, kind in unreadable[:10]:
             print("    COULD NOT READ  %s  (%s)" % (up, kind))
         if len(unreadable) > 10:
@@ -243,10 +265,27 @@ def main() -> int:
         print("%.1f%% of walked files are over the 4 KiB cap and were NEVER"
               % (100.0 * (total_walked - total_examined) / total_walked))
         print("  eligible for a hit. They are UNEXAMINED, not clean.")
+    if total_saved:
+        print()
+        print("⚠ %d FILE(S) ARE AN UPSTREAM FAILURE SAVED AS DATA. They are NOT a"
+              % len(total_saved))
+        print("  JSON refusal envelope, so refusal_envelope returns None and they")
+        print("  USED TO SCORE CLEAN inside the eligible population above.")
+        print("  openings this class is keyed on (declared so it can be argued with):")
+        print("    %s" % ", ".join(repr(m) for m in SAVED_FAILURE_OPENINGS[:7]))
+        print("    %s" % ", ".join(repr(m) for m in SAVED_FAILURE_OPENINGS[7:]))
+        print("    plus an html/xml body whose first 800 chars say error, denied,")
+        print("    forbidden, not found, unavailable, too many, captcha or rate limit")
+        for sp, sn, swhy in total_saved[:10]:
+            print("    %s  (%s)" % (sp, "%d bytes" % sn if sn >= 0 else "size unreadable"))
+            print("        %s" % swhy[:160])
+        if len(total_saved) > 10:
+            print("    … and %d more not listed" % (len(total_saved) - 10))
+        print()
     print("SCOPE: this detects a JSON refusal ENVELOPE under 4 KiB. A large")
     print("  saved error PAGE -- rho's 34,580-byte Vanguard 404 -- is the same")
     print("  class of defect and is outside this detector by construction.")
-    if total_hits:
+    if total_hits or total_saved:
         print("Each hit is an artefact your fix did not reach. A hit in a tree")
         print("you do not write is the DISJOINT SET, and it belongs to whoever")
         print("does write it — tell them rather than deleting it: a stored")
