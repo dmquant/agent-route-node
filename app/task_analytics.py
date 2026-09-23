@@ -12,6 +12,7 @@ Provides:
 import sqlite3
 import os
 import time
+from app.timebasis import time_basis
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from collections import defaultdict
@@ -236,6 +237,8 @@ def get_task_analytics(
 
     return {
         "date": date_str or datetime.now().strftime("%Y-%m-%d"),
+        # LOCAL, and the wire did not say so until now. See app/timebasis.
+        "time_basis": time_basis(),
         "days": days,
         "measured": measured,
         "metrics": {
@@ -328,6 +331,8 @@ def _empty_analytics(date_str, days):
     # not by reading the patch.
     return {
         "date": date_str or datetime.now().strftime("%Y-%m-%d"),
+        # LOCAL, and the wire did not say so until now. See app/timebasis.
+        "time_basis": time_basis(),
         "days": days,
         "measured": {
             "population": 0,
