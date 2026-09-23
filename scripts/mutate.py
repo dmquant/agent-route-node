@@ -140,8 +140,48 @@ def mutant(src: str, n: int):
     return ast.unparse(tree), m.applied
 
 
+# HOW A KILL IS CLASSIFIED, AND THE FIRST VERSION WAS A VOCABULARY OF LITERALS.
+#
+# It asked `"FAIL:" in out or "AssertionError" in out`. Those are UNITTEST's
+# words. This estate's suite has TWO protocols — 8 unittest files and 17 scripts
+# that print their own `FAIL <label>` and raise SystemExit(1) — and the scripts
+# say neither. So every kill by a script test was filed as an ERROR.
+#
+# The cost was a published number. dd626c20-8de4-49d0-8710-9a0f52f5c093 reported
+# "0 killed by an ASSERTION outside app/timebasis.py" across 185 mutants, and
+# timebasis is the ONE module in that sweep covered by a unittest file. The
+# classifier's vocabulary and the result were the same variable. Tenth recorded
+# instance of this class in this estate, and this time it was inside the
+# instrument measuring the estate.
+#
+# So: EVIDENCE, and a third bucket rather than a default. A kill with no
+# evidence either way is UNCLASSIFIED, because defaulting it to "error"
+# understates the suite — the fail-silent direction.
+_ASSERT_EVIDENCE = (
+    "AssertionError",          # unittest / bare assert
+    "FAIL:",                   # unittest's summary line
+)
+_ERROR_EVIDENCE = (
+    "Traceback (most recent call last):",
+)
+
+
+def classify_failure(out: str) -> str:
+    """'assert' | 'error' | 'unclassified' — never a default.
+
+    A traceback whose last line is an AssertionError is an ASSERTION, so the
+    assertion evidence is checked first. A script that prints its own failure
+    banner and exits non-zero leaves no evidence either way, and says so.
+    """
+    if any(e in out for e in _ASSERT_EVIDENCE):
+        return "assert"
+    if any(e in out for e in _ERROR_EVIDENCE):
+        return "error"
+    return "unclassified"
+
+
 def run_tests(root, tests, timeout=120):
-    """(ok, how) — how is 'pass' | 'assert' | 'error', because they are not the same kill."""
+    """(ok, how) — how is 'pass' | 'assert' | 'error' | 'unclassified'."""
     how = "pass"
     # NO BYTECODE. See the module docstring: a same-length mutation written in
     # the same second as its predecessor is INVISIBLE to CPython's (mtime, size)
@@ -164,9 +204,7 @@ def run_tests(root, tests, timeout=120):
         p = subprocess.run([sys.executable, "-B", t], cwd=root, capture_output=True,
                            text=True, timeout=timeout, env=env, start_new_session=True)
         if p.returncode != 0:
-            out = p.stdout + p.stderr
-            return False, ("assert" if "FAIL:" in out or "AssertionError" in out
-                           else "error")
+            return False, classify_failure(p.stdout + p.stderr)
     return True, how
 
 
@@ -225,7 +263,7 @@ def main() -> int:
             print("  ⚠ %d SITES NOT RUN. They are neither killed nor survivors; the"
                   % (total - a.limit))
             print("    counts below have that many rows outside every denominator.")
-        survivors, killed_assert, killed_error = [], 0, 0
+        survivors, killed_assert, killed_error, killed_unclassified = [], 0, 0, 0
         for i in range(n):
             src, applied = mutant(original, i)
             if src is None or src == original:
@@ -240,14 +278,20 @@ def main() -> int:
                 survivors.append(applied)
             elif how == "assert":
                 killed_assert += 1
-            else:
+            elif how == "error":
                 killed_error += 1
+            else:
+                killed_unclassified += 1
         with open(target, "w", encoding="utf-8") as fh:
             fh.write(original)
 
-        print("  killed by an ASSERTION   %d" % killed_assert)
-        print("  killed by an ERROR       %d   (a kill, but the test never judged it)"
+        print("  killed, ASSERTION evidence      %d" % killed_assert)
+        print("  killed, TRACEBACK evidence      %d   (the module broke before judging)"
               % killed_error)
+        print("  killed, NO EVIDENCE either way  %d   (a script test that prints its"
+              % killed_unclassified)
+        print("                                      own banner and exits non-zero —")
+        print("                                      NOT counted as an error)")
         print("  SURVIVORS                %d" % len(survivors))
         for ln, desc in survivors:
             print("      line %-5d %s" % (ln, desc))
