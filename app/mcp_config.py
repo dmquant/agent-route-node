@@ -69,8 +69,21 @@ _KEY_VAR = "AI_INSTITUTE_MCP_KEY"
 #
 # The value is the measured one, not the convenient one. Measured 2026-09-11: an
 # institute nk_ token authenticates tools/call ONLY as X-Admin-Token; X-API-Key
-# and Authorization: Bearer both return 401. tools/list needs no auth at all, so
-# a 200 there proves nothing -- reading one as proof is the scar behind this.
+# and Authorization: Bearer both return 401.
+#
+# THE NEXT SENTENCE USED TO READ "tools/list needs no auth at all, so a 200 there
+# proves nothing". THAT IS NO LONGER TRUE, and it stayed here after this same file
+# recorded the measurement that overturned it (see _probe, 2026-09-22). Re-measured
+# 2026-09-23 from sg01 AND gubei12, three credential arms on both endpoints:
+#
+#     ai-institute   real key 200/57 tools · zeroed 401 · absent 401
+#     ros-gateway    real key 200/92 tools · zeroed 401 · absent 401
+#
+# So tools/list IS gated on both, and a 200 there DOES prove the credential was
+# accepted. rho RHO-172 named this shape the same hour, in their own estate: one
+# writer, one field, and a reader still holding its superseded meaning. Here the
+# reader was preflight(), which published the stale sentence as a caveat to every
+# caller -- so the correction belongs in the code that ASKS, not only in a comment.
 DEFAULT_HEADER = "X-Admin-Token"
 
 _warned_default_header = False
@@ -227,36 +240,98 @@ def preflight(hand: str, timeout: float = 6.0) -> dict:
     so. This node does the same thing -- it writes a config and never checks
     the server came up.
 
-    Uses tools/list, which needs no auth on these endpoints. That makes it a
-    REACHABILITY probe and NOT an authorisation one, and this function says so
-    in its own result rather than in a comment, because a caller that reads
-    `reachable` as `usable` is the next defect.
+    `proves` USED TO BE A CONSTANT STRING, AND IT WAS WRONG.
+
+    It read "reachability only — tools/list needs no auth here", which this
+    estate's own _probe had already contradicted in this same file. A claim that
+    is a literal in the result is not a finding about the endpoint; it is a
+    finding about whoever typed it, and it cannot be cleared by fixing what it
+    describes. This estate's rule for a check applies to a caveat too.
+
+    So the gating is now MEASURED, one extra request per server: the same
+    tools/list with the credential ABSENT. Present-and-wrong is a third arm and
+    is deliberately NOT run here -- absent is the arm that answers "is this
+    endpoint gated at all", and verify_server already runs the wrong-credential
+    arm for the question preflight is not asking.
+
+    Per server the result carries `gated`:
+
+        True     the no-credential arm was refused, so a 200 with the credential
+                 means the credential was ACCEPTED, not merely that a port answered
+        False    the endpoint served tools/list to nobody in particular; a 200
+                 with the credential proves reachability and nothing more
+        None     the control itself could not run (timeout, DNS, 5xx). THAT IS
+                 NOT A False. An unmeasured gate must not read as an open one.
+
+    And the direction matters, which is why this is worth a request: the failure
+    of the old constant was toward UNDERSTATEMENT -- it told callers a 200 proved
+    less than it did, so a caller who needed the stronger fact had to build a
+    second probe by hand. Three were built by hand on 2026-09-23 and two of them
+    were wrong in the way 137e772 had already fixed inside this module. A stale
+    caveat does not just misinform; it manufactures the duplicate instrument that
+    carries the next defect.
+
+    NO CALLER TODAY. preflight() and reachability_notice() are reached from
+    nothing in app/, scripts/ or tests/ -- verify_server, which prepare() does
+    call, supersedes the credential question. That is said here rather than left
+    to be rediscovered, because a function with a published claim and no caller
+    is how f17b320 happened one commit ago.
     """
     import urllib.request
     import urllib.error
 
-    out = {"checked": [], "reachable": [], "unreachable": [],
-           "proves": "reachability only — tools/list needs no auth here, so a "
-                     "reachable server may still refuse every tools/call"}
+    def _list(cfg, with_credential):
+        hdrs = {"Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                PROBE_HEADER: "agent-route-node/preflight",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+        if with_credential:
+            hdrs[cfg["header"]] = cfg["scheme"] + cfg["key"]
+        req = urllib.request.Request(cfg["url"], data=body, method="POST", headers=hdrs)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                r.read(1)
+                return r.status, None
+        except urllib.error.HTTPError as e:
+            return e.code, None
+        except Exception as e:
+            return None, "%s: %s" % (type(e).__name__, e)
+
+    out = {"checked": [], "reachable": [], "unreachable": [], "gated": {},
+           "proves": None}
     body = json.dumps({"jsonrpc": "2.0", "id": 1,
                        "method": "tools/list", "params": {}}).encode()
     for cfg in servers_for(hand):
         out["checked"].append(cfg["name"])
-        req = urllib.request.Request(cfg["url"], data=body, method="POST", headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-            cfg["header"]: cfg["scheme"] + cfg["key"]})
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                ok = r.status == 200
-                r.read(1)
-        except Exception as e:
-            ok, err = False, "%s: %s" % (type(e).__name__, e)
-        if ok:
+        status, err = _list(cfg, True)
+        # THE CONTROL: the same call with no credential at all.
+        ctl_status, ctl_err = _list(cfg, False)
+        if ctl_err is not None or ctl_status is None:
+            gated = None
+        else:
+            gated = ctl_status in (401, 403)
+        out["gated"][cfg["name"]] = gated
+        if status == 200:
             out["reachable"].append(cfg["name"])
         else:
-            out["unreachable"].append({"name": cfg["name"], "why": err[:120]})
+            out["unreachable"].append({
+                "name": cfg["name"],
+                "why": (err or "HTTP %s" % status)[:120]})
+    measured = [v for v in out["gated"].values()]
+    if not measured:
+        out["proves"] = "nothing — no governed server is configured for this hand"
+    elif all(v is True for v in measured):
+        out["proves"] = ("credential acceptance — the no-credential control was "
+                         "refused on every server checked, so a reachable server "
+                         "here also accepted this node's credential")
+    elif any(v is None for v in measured):
+        out["proves"] = ("reachability, and the gating is UNMEASURED on at least "
+                         "one server — the no-credential control could not run, "
+                         "which is not the same as an open endpoint")
+    else:
+        out["proves"] = ("reachability only on at least one server — its "
+                         "tools/list answered without a credential, so a 200 "
+                         "there says a port answered and nothing about auth")
     return out
 
 
