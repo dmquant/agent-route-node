@@ -148,8 +148,21 @@ def run_tests(root, tests, timeout=120):
     # cache check, and the test then runs against source that was never loaded.
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     for t in tests:
+        # start_new_session PUTS EACH TEST IN ITS OWN SESSION AND PROCESS GROUP,
+        # AND THIS RUNNER KILLED ITS OWN SHELL BEFORE IT DID.
+        #
+        # app/hands/base.py carries the child-reaping wall, and
+        # tests/test_wall_reaches_children.py exercises it by killing a PROCESS
+        # GROUP. Mutate that module and the group it signals is no longer the
+        # one the test created -- it is whatever group the test inherited, which
+        # is the runner's, the shell's, and everything above.
+        #
+        # Observed: three sweep attempts died with zero output and no exit
+        # status, the first module every time. An instrument that EXECUTES a
+        # suite inherits that suite's blast radius, so containment is a property
+        # the instrument owes rather than a property of the tests it runs.
         p = subprocess.run([sys.executable, "-B", t], cwd=root, capture_output=True,
-                           text=True, timeout=timeout, env=env)
+                           text=True, timeout=timeout, env=env, start_new_session=True)
         if p.returncode != 0:
             out = p.stdout + p.stderr
             return False, ("assert" if "FAIL:" in out or "AssertionError" in out
