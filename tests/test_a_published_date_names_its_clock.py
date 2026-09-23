@@ -82,12 +82,31 @@ class TestTimeBasis(unittest.TestCase):
         self.assertEqual(across["utc_offset"], "+08:00")
         self.assertRegex(same["utc_offset"], r"^[+-]\d{2}:\d{2}$")
 
-    def test_the_live_record_still_agrees_with_the_host(self):
+    def test_the_live_record_holds_the_relation_at_ANY_hour(self):
+        """THIRD green mutation of the hour, same root cause as the first two.
+
+        The first version asserted `local_date == datetime.now().strftime(...)`.
+        Replacing local_date with the UTC date left that GREEN, because at
+        01:5xZ / 09:5x local the two are equal. Comparing a field against a
+        clock that currently agrees with it tests nothing — and the environment,
+        not the fixture, was supplying the separating value.
+
+        The RELATION is true at every hour: local is UTC shifted by the offset.
+        So it is asserted rather than the coincidence.
+        """
         b = time_basis()
-        self.assertEqual(b["local_date"],
-                         datetime.datetime.now().strftime("%Y-%m-%d"))
-        self.assertEqual(b["utc_date"], datetime.datetime.now(
-            datetime.timezone.utc).strftime("%Y-%m-%d"))
+        derived = (datetime.datetime.strptime(b["utc_date"], "%Y-%m-%d")
+                   .replace(tzinfo=datetime.timezone.utc)
+                   + datetime.timedelta(seconds=b["utc_offset_seconds"]))
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        local_now = now_utc + datetime.timedelta(seconds=b["utc_offset_seconds"])
+        self.assertEqual(b["local_date"], local_now.strftime("%Y-%m-%d"),
+                         "local_date must be UTC shifted by the offset, at any hour")
+        self.assertEqual(b["utc_date"], now_utc.strftime("%Y-%m-%d"))
+        # and the two fields must not be the same expression wearing two names
+        self.assertEqual(b["differs_from_utc_date"],
+                         b["local_date"] != b["utc_date"])
+        self.assertLessEqual(abs((derived.date() - now_utc.date()).days), 1)
 
     def test_the_offset_string_matches_the_seconds(self):
         b = time_basis()
