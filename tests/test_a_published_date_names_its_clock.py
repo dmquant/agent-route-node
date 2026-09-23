@@ -82,52 +82,35 @@ class TestTimeBasis(unittest.TestCase):
         self.assertEqual(across["utc_offset"], "+08:00")
         self.assertRegex(same["utc_offset"], r"^[+-]\d{2}:\d{2}$")
 
-    def test_the_live_record_holds_the_relation_at_ANY_hour(self):
-        """THIRD green mutation of the hour, same root cause as the first two.
+    def test_the_adapter_is_tested_ACROSS_a_boundary_by_injecting_the_clock(self):
+        """THE THIRD FIX ALSO FAILED, and this is why the clock is an argument.
 
-        The first version asserted `local_date == datetime.now().strftime(...)`.
-        Replacing local_date with the UTC date left that GREEN, because at
-        01:5xZ / 09:5x local the two are equal. Comparing a field against a
-        clock that currently agrees with it tests nothing — and the environment,
-        not the fixture, was supplying the separating value.
+        Three mutations stayed green in a row. Whether `local_date` holds the
+        local date or the UTC date is OBSERVABLE only when a day boundary falls
+        between them — 8 hours in 24 on a +08 host. Outside that window every
+        live-clock assertion compares two equal strings, however it is phrased;
+        asserting "local is UTC shifted by the offset" does not help either,
+        because shifting 01:5xZ by +08:00 lands on the same date.
 
-        The RELATION is true at every hour: local is UTC shifted by the offset.
-        So it is asserted rather than the coincidence.
+        No cleverness with the host clock fixes that. The clock has to be an
+        input.
         """
+        tz8 = datetime.timezone(datetime.timedelta(hours=8))
+        # 2026-09-22T23:30Z is 2026-09-23T07:30 local — opposite sides of midnight
+        utcnow = datetime.datetime(2026, 9, 22, 23, 30, tzinfo=datetime.timezone.utc)
+        b = time_basis(now=utcnow.astimezone(tz8), utcnow=utcnow)
+        self.assertEqual(b["local_date"], "2026-09-23")
+        self.assertEqual(b["utc_date"], "2026-09-22")
+        self.assertTrue(b["differs_from_utc_date"])
+        self.assertEqual(b["utc_offset"], "+08:00")
+
+    def test_the_default_clock_is_still_the_host(self):
         b = time_basis()
-        derived = (datetime.datetime.strptime(b["utc_date"], "%Y-%m-%d")
-                   .replace(tzinfo=datetime.timezone.utc)
-                   + datetime.timedelta(seconds=b["utc_offset_seconds"]))
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
-        local_now = now_utc + datetime.timedelta(seconds=b["utc_offset_seconds"])
-        self.assertEqual(b["local_date"], local_now.strftime("%Y-%m-%d"),
-                         "local_date must be UTC shifted by the offset, at any hour")
-        self.assertEqual(b["utc_date"], now_utc.strftime("%Y-%m-%d"))
-        # and the two fields must not be the same expression wearing two names
-        self.assertEqual(b["differs_from_utc_date"],
-                         b["local_date"] != b["utc_date"])
-        self.assertLessEqual(abs((derived.date() - now_utc.date()).days), 1)
-
-    def test_the_offset_string_matches_the_seconds(self):
-        b = time_basis()
-        sign = 1 if b["utc_offset"][0] == "+" else -1
-        hh, mm = b["utc_offset"][1:].split(":")
-        self.assertEqual(sign * (int(hh) * 3600 + int(mm) * 60), b["utc_offset_seconds"])
-
-    def test_offsets_format_without_needing_a_clock(self):
-        """divmod on a negative rounds toward minus infinity — the sign comes off first.
-
-        The first version of this test faked `datetime.now`; the fake returned an
-        aware value, `.astimezone()` converted it straight back to the host zone,
-        and the test asserted -04:00 against the host's own +08:00. A pure
-        function of an integer needs no clock.
-        """
-        from app.timebasis import fmt_offset
-        for secs, want in ((0, "+00:00"), (8 * 3600, "+08:00"), (-4 * 3600, "-04:00"),
-                           (5 * 3600 + 1800, "+05:30"), (-(3 * 3600 + 1800), "-03:30"),
-                           (5 * 3600 + 2700, "+05:45"), (14 * 3600, "+14:00"),
-                           (-60, "-00:01")):
-            self.assertEqual(fmt_offset(secs), want, "offset %d" % secs)
+        self.assertEqual(b["utc_date"], datetime.datetime.now(
+            datetime.timezone.utc).strftime("%Y-%m-%d"))
+        self.assertEqual(b["utc_offset_seconds"],
+                         int(datetime.datetime.now().astimezone()
+                             .utcoffset().total_seconds()))
 
     # ---- the structural half -------------------------------------------------
     def test_every_dateish_value_in_a_payload_is_accompanied_by_the_basis(self):

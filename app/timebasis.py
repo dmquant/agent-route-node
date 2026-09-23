@@ -95,14 +95,28 @@ def basis_from(local_date: str, utc_date: str, offset_seconds: int, tzname: str)
     }
 
 
-def time_basis() -> dict:
+def time_basis(now=None, utcnow=None) -> dict:
     """What clock this node's published dates and hour buckets are on.
 
-    Everything here is derived from the host at call time; nothing is declared.
+    THE CLOCK IS AN ARGUMENT, AND THAT IS NOT TASTE — IT IS THE ONLY WAY TO TEST
+    THIS AT AN ARBITRARY HOUR.
+
+    Three mutations of this module stayed GREEN in a row, and the third fix
+    failed for the same reason as the first two. Whether `local_date` is the
+    local date or the UTC date is OBSERVABLE only when a day boundary falls
+    between them — local 00:00-07:59 on a +08 host, 8 hours in 24. Outside that
+    window every live-clock assertion is comparing two equal strings, however it
+    is phrased. Asserting "local is UTC shifted by the offset" does not help:
+    shifting 01:5xZ by +08:00 lands on the same date.
+
+    So the boundary cases belong to `basis_from`, which takes values, and this
+    adapter takes its clock as an argument so a test can put it on either side
+    of midnight. `None` means the host, which is what every caller passes.
     """
-    now = datetime.now().astimezone()
+    now = now if now is not None else datetime.now().astimezone()
+    utcnow = utcnow if utcnow is not None else datetime.now(timezone.utc)
     off = now.utcoffset()
     return basis_from(now.strftime("%Y-%m-%d"),
-                      datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                      utcnow.strftime("%Y-%m-%d"),
                       int(off.total_seconds()) if off is not None else 0,
                       now.tzname() or "")
