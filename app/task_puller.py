@@ -273,8 +273,16 @@ async def _pull_and_execute() -> None:
 
     except Exception as e:
         if "ConnectError" not in str(type(e)):
-            _logger.error(f"Poll error: {e}")
-            print(f"[task-puller] Error: {e}")
+            _logger.error(f"Poll error: {_describe_error(e)}")
+            print(f"[task-puller] Error: {_describe_error(e)}")
+
+
+def _describe_error(e: BaseException) -> str:
+    """Name the exception's TYPE, always. httpx timeouts stringify to "", so
+    logging only str(e) left 8,849 "Poll error: " lines on gubei12 with no
+    cause at all -- the log's most common failure was its least classifiable."""
+    msg = str(e).strip()
+    return f"{type(e).__name__}: {msg}" if msg else f"{type(e).__name__} (no message)"
 
 
 async def _sync_workspace_from_r2(client, worker_url, auth_key, session_id, workspace_dir):
