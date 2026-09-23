@@ -61,6 +61,22 @@ class TestSavedFailure(unittest.TestCase):
             "<!DOCTYPE html><html><head><title>Quarterly Results 2026</title>"
             "</head><body>" + "figures " * 200 + "</body></html>"))
 
+    def test_rhos_pinned_titles(self):
+        """rho ab01d502 §2: a segment must BE a failure, not mention one."""
+        w = lambda x: ("<!DOCTYPE html><html><head><title>%s</title></head>"
+                       "<body>x</body></html>" % x)
+        for x in ("404 Error Handling Best Practices | Blog",
+                  "Error analysis in numerical methods",
+                  "How to fix a 502 Bad Gateway | DevBlog",
+                  "Not Found: The Story of a Lost City", "200 OK | Status"):
+            self.assertIsNone(saved_failure(w(x)), x)
+        for x in ("404 Error - Page not found | Vanguard", "Access denied",
+                  "502 Bad Gateway", "Page Not Found | GovInfo",
+                  "STB Law - Page Not Found", "404 Not Found - 华尔街见闻",
+                  "404 您访问的页面找不到了_腾讯网",
+                  "503 Service Temporarily Unavailable"):
+            self.assertIsNotNone(saved_failure(w(x)), x)
+
     # ---- the negatives, which are what stop this being a keyword search -----
     def test_markup_that_is_not_an_error_page_does_not_fire(self):
         self.assertIsNone(saved_failure(

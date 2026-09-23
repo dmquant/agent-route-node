@@ -226,6 +226,36 @@ _MARKUP_FAILURE_WORDS = ("error", "denied", "forbidden", "not found",
 _TITLE = __import__("re").compile(r"<title[^>]*>(.*?)</title>", 2 | 16)
 
 
+_SEG = __import__("re").compile(r"\s+[|\-\u2013\u2014_]\s+|_")
+_FAILURE_SEGMENT = __import__("re").compile(
+    r"^(?:(?:4\d\d|5\d\d)(?:\s+error)?\s*[-:]?\s*)?"
+    r"(?:page\s+)?(?:not\s+found|access\s+denied|forbidden|bad\s+gateway|"
+    r"service\s+(?:temporarily\s+)?unavailable|internal\s+server\s+error|"
+    r"too\s+many\s+requests|gateway\s+time-?out)$|^(?:4\d\d|5\d\d)$", 2)
+_CJK_FAILURE = ("页面找不到", "页面不存在", "访问被拒绝")
+
+
+def _title_is_a_failure(title: str) -> bool:
+    """A SEGMENT of the title must BE a failure — never merely mention one.
+
+    rho ab01d502-a886-431a-a436-840bbab62cce §2: a census can over-count
+    visibly; a GATE that over-blocks destroys research silently. The first form
+    of this arm matched a failure word ANYWHERE and fired on four of rho's five
+    pinned admitted titles ("404 Error Handling Best Practices | Blog", "Error
+    analysis in numerical methods", "How to fix a 502 Bad Gateway | DevBlog",
+    "Not Found: The Story of a Lost City"). It lives in the sweep today, so the
+    cost was a wrong count — but a predicate written loose for a count is the
+    one that gets reused as a gate, so it is written tight once.
+    """
+    t = " ".join(title.split())
+    if any(c in t for c in _CJK_FAILURE) and t[:3].isdigit():
+        return True
+    for seg in _SEG.split(t):
+        if _FAILURE_SEGMENT.match(seg.strip().lower()):
+            return True
+    return False
+
+
 def saved_failure(text: str):
     """A one-line description if this body is an upstream failure saved as DATA.
 
@@ -271,10 +301,13 @@ def saved_failure(text: str):
     low = s[:20].lower()
     if any(low.startswith(m) for m in _MARKUP_OPENINGS):
         t = _TITLE.search(s[:20000])
-        if t and any(w in t.group(1).lower() for w in _MARKUP_FAILURE_WORDS):
+        if t and _title_is_a_failure(t.group(1)):
             return ("this file's CONTENT is a markup ERROR PAGE saved as data: "
                     "its title says %r" % t.group(1).strip()[:60])
-        head = s[:800].lower()
+        # The title has had its say above, tightly. Letting the body arm read it
+        # again with the loose word list would re-admit every title the segment
+        # rule just refused — so it reads the page with the title removed.
+        head = _TITLE.sub(" ", s[:20000])[:800].lower()
         if any(w in head for w in _MARKUP_FAILURE_WORDS):
             return ("this file's CONTENT is a markup ERROR PAGE saved as data: "
                     "it opens %r" % s[:60].replace("\n", " "))
