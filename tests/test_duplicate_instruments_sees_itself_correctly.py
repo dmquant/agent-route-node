@@ -71,10 +71,24 @@ class TestCensusSeesItselfCorrectly(unittest.TestCase):
         self.assertIn("tools/call", out)
 
     def test_a_method_named_only_in_a_docstring_is_not_issued(self):
+        """THIS FIXTURE WAS TOO SMALL TO EXPRESS ITS OWN MUTATION, and the
+        mutation run caught it — rho fdae24d3-a291-4c0a-9be9-ec451f1e2b8e §2,
+        in this estate within the hour of being published.
+
+        The first version's docstring read "We deliberately do NOT use
+        tools/list here." Method matching is EXACT EQUALITY on a string
+        constant, so that docstring never equalled "tools/list" and the
+        docstring exclusion was never exercised: deleting the exclusion left
+        the suite GREEN.
+
+        The only value that separates the two is a docstring whose ENTIRE
+        content is a method name. That is contrived — and it is precisely the
+        contrivance the code claims to handle, so the fixture has to be it.
+        """
         p = self.write("docstr.py", (
             "import urllib.request, json\n"
             "def go(u):\n"
-            '    """We deliberately do NOT use tools/list here."""\n'
+            '    """tools/list"""\n'
             "    b = json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize'}).encode()\n"
             "    return urllib.request.urlopen(urllib.request.Request(u, data=b))\n"))
         out = run(p)
