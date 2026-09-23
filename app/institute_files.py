@@ -205,7 +205,6 @@ SAVED_FAILURE_OPENINGS = (
     "Edge:",                      # 23 bytes: "Edge: Too Many Requests"
     "error code:",                # 17 bytes: Cloudflare's "error code: 1015"
     "Client sent",                # "Client sent an HTTP request to an HTTPS server."
-    "HTTP/",                      # raw response headers saved as the body
     "Too Many Requests", "Rate limit",
     "403 Forbidden", "404 Not Found", "500 Internal",
     "Service Unavailable", "Bad Gateway", "Access denied", "Forbidden",
@@ -293,6 +292,16 @@ def saved_failure(text: str):
         return None
     s = text.lstrip()
     if not s:
+        return None
+    # RAW RESPONSE HEADERS: a failure only when the STATUS is. The first form
+    # keyed on the bare "HTTP/" prefix and fired on `HTTP/2 200` and `HTTP/2 302`
+    # header dumps — deliberate `curl -i` output, not failures. Found by reading
+    # the non-.json hits of the estate-wide count, 2026-09-23.
+    _st = __import__("re").match(r"HTTP/[\d.]+\s+(\d{3})", s)
+    if _st:
+        if int(_st.group(1)) >= 400:
+            return ("this file's CONTENT is raw response headers with status %s "
+                    "saved as data" % _st.group(1))
         return None
     for m in SAVED_FAILURE_OPENINGS:
         if s.startswith(m):

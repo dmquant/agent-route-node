@@ -41,7 +41,7 @@ class TestSavedFailure(unittest.TestCase):
                      "Edge: Too Many Requests",                          # 23 B
                      "error code: 1015",                                 # 17 B
                      "Client sent an HTTP request to an HTTPS server. ",  # 48 B
-                     "HTTP/2 200 \r\ndate: Tue, 02 Jun 2026 09:10:50 GMT"):
+                     "HTTP/2 404 \r\ncontent-type: text/html"):
             self.assertIsNotNone(saved_failure(body), body[:30])
 
     def test_markup_error_pages(self):
@@ -91,6 +91,12 @@ class TestSavedFailure(unittest.TestCase):
         self.assertIsNone(saved_failure(
             "Our Q3 review notes a 404 Not Found on the vendor endpoint, "
             "which the team resolved by rotating the key."))
+
+    def test_a_successful_header_dump_is_not_a_failure(self):
+        for body in ("HTTP/2 200 \r\ndate: Thu, 17 Sep 2026 22:13:57 GMT",
+                     "HTTP/2 302 \r\nlocation: https://example.com/"):
+            self.assertIsNone(saved_failure(body), body[:14])
+        self.assertIsNotNone(saved_failure("HTTP/2 401 \ndate: x"))
 
     def test_legitimate_data_does_not_fire(self):
         for body in ('{"rows": [1, 2, 3]}',
