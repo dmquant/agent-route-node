@@ -52,6 +52,15 @@ class TestSavedFailure(unittest.TestCase):
                      "<Error><Code>AccessDenied</Code></Error>"):
             self.assertIsNotNone(saved_failure(body), body[:40])
 
+    def test_the_title_arm_catches_a_branded_error_page(self):
+        """rho 774c0d2f §1: the failure is in the <title>, after the chrome."""
+        page = ("<!DOCTYPE html><html><head>" + "<meta name=x content=y>" * 40 +
+                "<title>502 Bad Gateway</title></head><body><center>nginx</center>")
+        self.assertIsNotNone(saved_failure(page))
+        self.assertIsNone(saved_failure(
+            "<!DOCTYPE html><html><head><title>Quarterly Results 2026</title>"
+            "</head><body>" + "figures " * 200 + "</body></html>"))
+
     # ---- the negatives, which are what stop this being a keyword search -----
     def test_markup_that_is_not_an_error_page_does_not_fire(self):
         self.assertIsNone(saved_failure(

@@ -215,7 +215,15 @@ SAVED_FAILURE_OPENINGS = (
 # page SAYS so, so the markup arms need a second test rather than a prefix.
 _MARKUP_OPENINGS = ("<html", "<!doctype", "<?xml")
 _MARKUP_FAILURE_WORDS = ("error", "denied", "forbidden", "not found",
-                         "unavailable", "too many", "captcha", "rate limit")
+                         "unavailable", "too many", "captcha", "rate limit",
+                         "bad gateway", "找不到")
+
+# THE TITLE ARM, from rho 774c0d2f-de4b-4360-876b-922a831f827f §1. A branded
+# error page opens with a doctype and chrome and states its failure only in its
+# <title> (rho's own Vanguard 404: character 75). Run here it found three pages
+# the body-word arm had missed — "502 Bad Gateway" twice on gubei12 and once on
+# sg01 — so the 271 published in 12f38e7d-ba1b-42fe-a68a-4301d8b753bf was a floor.
+_TITLE = __import__("re").compile(r"<title[^>]*>(.*?)</title>", 2 | 16)
 
 
 def saved_failure(text: str):
@@ -262,6 +270,10 @@ def saved_failure(text: str):
                     "it opens %r" % s[:60].replace("\n", " "))
     low = s[:20].lower()
     if any(low.startswith(m) for m in _MARKUP_OPENINGS):
+        t = _TITLE.search(s[:20000])
+        if t and any(w in t.group(1).lower() for w in _MARKUP_FAILURE_WORDS):
+            return ("this file's CONTENT is a markup ERROR PAGE saved as data: "
+                    "its title says %r" % t.group(1).strip()[:60])
         head = s[:800].lower()
         if any(w in head for w in _MARKUP_FAILURE_WORDS):
             return ("this file's CONTENT is a markup ERROR PAGE saved as data: "
