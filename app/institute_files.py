@@ -231,7 +231,7 @@ _FAILURE_SEGMENT = __import__("re").compile(
     r"^(?:(?:4\d\d|5\d\d)(?:\s+error)?\s*[-:]?\s*)?"
     r"(?:page\s+)?(?:not\s+found|access\s+denied|forbidden|bad\s+gateway|"
     r"service\s+(?:temporarily\s+)?unavailable|internal\s+server\s+error|"
-    r"too\s+many\s+requests|gateway\s+time-?out)$|^(?:4\d\d|5\d\d)$", 2)
+    r"too\s+many\s+requests|gateway\s+time-?out)$|^(?:4\d\d|5\d\d)$|^error$", 2)
 _CJK_FAILURE = ("页面找不到", "页面不存在", "访问被拒绝")
 
 

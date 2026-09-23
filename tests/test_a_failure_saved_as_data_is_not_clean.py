@@ -74,7 +74,8 @@ class TestSavedFailure(unittest.TestCase):
                   "502 Bad Gateway", "Page Not Found | GovInfo",
                   "STB Law - Page Not Found", "404 Not Found - 华尔街见闻",
                   "404 您访问的页面找不到了_腾讯网",
-                  "503 Service Temporarily Unavailable"):
+                  "503 Service Temporarily Unavailable",
+                  "404", "Error - Cookies Turned Off"):   # rho cdaa68bd §1
             self.assertIsNotNone(saved_failure(w(x)), x)
 
     # ---- the negatives, which are what stop this being a keyword search -----
