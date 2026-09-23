@@ -157,7 +157,23 @@ def mutant(src: str, n: int):
 # So: EVIDENCE, and a third bucket rather than a default. A kill with no
 # evidence either way is UNCLASSIFIED, because defaulting it to "error"
 # understates the suite — the fail-silent direction.
-_ASSERT_EVIDENCE = (
+# WHEN A VOCABULARY IS UNAVOIDABLE, MAKE IT A DECLARED PARAMETER.
+#
+# The first classifier hid unittest's words inside the tool, and reported a
+# property of that vocabulary as a property of the estate. Reading the output
+# (rho RHO-179's move, run inward) then showed the third bucket was full of
+# named judgements:
+#
+#     FAILURES: ['population is the real count', 'success_rate is computed…']
+#     FAILED: the wall reached the grandchild, it reports killing a GROUP
+#     claude success_rate is 2/3
+#
+# Those ARE assertions; the estate's 17 script tests simply spell them
+# differently from its 8 unittest files. So the marker set is now an ARGUMENT.
+# The caller states the conventions in use, the defaults cover unittest, and the
+# report PRINTS the set it used — a vocabulary that is declared and shown can be
+# argued with; one buried in a function cannot.
+_ASSERT_EVIDENCE_DEFAULT = (
     "AssertionError",          # unittest / bare assert
     "FAIL:",                   # unittest's summary line
 )
@@ -166,22 +182,32 @@ _ERROR_EVIDENCE = (
 )
 
 
-def classify_failure(out: str) -> str:
+def classify_failure(out: str, markers=_ASSERT_EVIDENCE_DEFAULT) -> str:
     """'assert' | 'error' | 'unclassified' — never a default.
 
     A traceback whose last line is an AssertionError is an ASSERTION, so the
     assertion evidence is checked first. A script that prints its own failure
     banner and exits non-zero leaves no evidence either way, and says so.
     """
-    if any(e in out for e in _ASSERT_EVIDENCE):
+    if any(e in out for e in markers):
         return "assert"
     if any(e in out for e in _ERROR_EVIDENCE):
         return "error"
     return "unclassified"
 
 
-def run_tests(root, tests, timeout=120):
-    """(ok, how) — how is 'pass' | 'assert' | 'error' | 'unclassified'."""
+def run_tests(root, tests, timeout=120, want_output=False,
+              markers=_ASSERT_EVIDENCE_DEFAULT):
+    """(ok, how) — how is 'pass' | 'assert' | 'error' | 'unclassified'.
+
+    With want_output, returns (ok, how, evidence_line) — the last non-empty line
+    of the failing output. rho RHO-179 showed why that line is worth keeping:
+    they had LABELLED their error bucket "the module failed to load", read the
+    output, and found 0 of 14 were load failures — every one was the TEST'S OWN
+    READ throwing on a result the mutant had emptied. The bucket meant the
+    opposite of what its label invited. A label on a bucket is a claim about its
+    contents, and the only way to check it is to read one.
+    """
     how = "pass"
     # NO BYTECODE. See the module docstring: a same-length mutation written in
     # the same second as its predecessor is INVISIBLE to CPython's (mtime, size)
@@ -204,8 +230,13 @@ def run_tests(root, tests, timeout=120):
         p = subprocess.run([sys.executable, "-B", t], cwd=root, capture_output=True,
                            text=True, timeout=timeout, env=env, start_new_session=True)
         if p.returncode != 0:
-            return False, classify_failure(p.stdout + p.stderr)
-    return True, how
+            out = p.stdout + p.stderr
+            how = classify_failure(out, markers)
+            if want_output:
+                lines = [l for l in out.splitlines() if l.strip()]
+                return False, how, (lines[-1][:150] if lines else "(no output at all)")
+            return False, how
+    return (True, how, "") if want_output else (True, how)
 
 
 def main() -> int:
@@ -213,9 +244,18 @@ def main() -> int:
     ap.add_argument("module", help="path under app/, e.g. app/timebasis.py")
     ap.add_argument("tests", nargs="+", help="test files that cover it")
     ap.add_argument("--limit", type=int, default=60)
+    ap.add_argument("--assert-marker", action="append", default=[],
+                    help="a string whose presence in a failing test's output means "
+                         "A TEST JUDGED AN OUTPUT. Repeatable. Declares the estate's "
+                         "convention instead of the tool guessing it; unittest's words "
+                         "are always included.")
+    ap.add_argument("--explain", action="store_true",
+                    help="print the last output line of every non-assertion kill")
     ap.add_argument("--repo", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     a = ap.parse_args()
 
+    markers = tuple(_ASSERT_EVIDENCE_DEFAULT) + tuple(a.assert_marker)
+    print("assertion markers in use: %s" % ", ".join(repr(m) for m in markers))
     scratch = tempfile.mkdtemp(prefix="mutate-")
     dst = os.path.join(scratch, "tree")
     shutil.copytree(a.repo, dst, ignore=shutil.ignore_patterns(
@@ -225,7 +265,7 @@ def main() -> int:
 
     try:
         # CONTROL 1 — the copy must be green before anything is changed.
-        ok, how = run_tests(dst, a.tests)
+        ok, how = run_tests(dst, a.tests, markers=markers)
         if not ok:
             print("BASELINE IS %s ON THE COPY — the runner cannot say anything. "
                   "Nothing below would be a measurement." % how.upper())
@@ -233,7 +273,7 @@ def main() -> int:
         # CONTROL 2 — a null mutant (the source, round-tripped) must also be green.
         with open(target, "w", encoding="utf-8") as fh:
             fh.write(ast.unparse(ast.parse(original)))
-        ok, how = run_tests(dst, a.tests)
+        ok, how = run_tests(dst, a.tests, markers=markers)
         with open(target, "w", encoding="utf-8") as fh:
             fh.write(original)
         if not ok:
@@ -247,7 +287,7 @@ def main() -> int:
         pad = null_len - len(broken.encode())
         with open(target, "w", encoding="utf-8") as fh:
             fh.write(broken + ("#" * pad if pad > 0 else ""))
-        ok, _ = run_tests(dst, a.tests)
+        ok, _ = run_tests(dst, a.tests, markers=markers)
         with open(target, "w", encoding="utf-8") as fh:
             fh.write(original)
         if ok:
@@ -264,6 +304,7 @@ def main() -> int:
                   % (total - a.limit))
             print("    counts below have that many rows outside every denominator.")
         survivors, killed_assert, killed_error, killed_unclassified = [], 0, 0, 0
+        evidence = []
         for i in range(n):
             src, applied = mutant(original, i)
             if src is None or src == original:
@@ -271,17 +312,19 @@ def main() -> int:
             with open(target, "w", encoding="utf-8") as fh:
                 fh.write(src)
             try:
-                ok, how = run_tests(dst, a.tests)
+                ok, how, why = run_tests(dst, a.tests, want_output=True, markers=markers)
             except subprocess.TimeoutExpired:
-                ok, how = False, "error"
+                ok, how, why = False, "error", "TIMEOUT"
             if ok:
                 survivors.append(applied)
             elif how == "assert":
                 killed_assert += 1
             elif how == "error":
                 killed_error += 1
+                evidence.append((applied[0], "error", why))
             else:
                 killed_unclassified += 1
+                evidence.append((applied[0], "no-evidence", why))
         with open(target, "w", encoding="utf-8") as fh:
             fh.write(original)
 
@@ -295,6 +338,11 @@ def main() -> int:
         print("  SURVIVORS                %d" % len(survivors))
         for ln, desc in survivors:
             print("      line %-5d %s" % (ln, desc))
+        if a.explain and evidence:
+            print()
+            print("  WHAT THE NON-ASSERTION KILLS ACTUALLY SAY (rho RHO-179's question):")
+            for ln, bucket, why in evidence[:14]:
+                print("      line %-5d %-12s %s" % (ln, bucket, why))
         if survivors:
             print()
             print("  A SURVIVOR IS INFORMATION ABOUT THE SUITE, NOT A VERDICT ON THE")
