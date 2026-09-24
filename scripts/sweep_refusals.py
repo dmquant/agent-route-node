@@ -291,6 +291,15 @@ def main() -> int:
         print("does write it — tell them rather than deleting it: a stored")
         print("refusal is evidence of a caller bug.")
         return 1
+    if total_unreadable:
+        # rho RHO-227: a PARTIAL sweep was judged in no branch -- only an EMPTY
+        # root refused. A failed read cannot manufacture a hit, so hits above
+        # still stand; but "no refusals" cannot, because an unread file and a
+        # clean one are the same reading from here.
+        print("⚠ NOT A CLEAN RESULT: %d file(s) were never read, so 'no saved"
+              % total_unreadable)
+        print("  refusals' is a floor over the readable population, not a zero.")
+        return 2
     print("No saved refusals in the population above. This says nothing about")
     print("populations this seat cannot read — publish the detector and have")
     print("each holder sweep its own.")
