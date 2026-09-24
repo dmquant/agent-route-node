@@ -158,6 +158,10 @@ def kill_process_tree(process, sig=signal.SIGKILL) -> str:
             return "could not kill pid %d: %s" % (pid, e2)
 
 
+# The node's identity with agent-route and its admin fallback: never a hand's.
+NODE_ONLY_CREDENTIALS = ("NODE_KEY", "NODE_TOKEN", "ADMIN_API_KEY")
+
+
 def get_cli_env(cwd: str = "") -> dict:
     """Build a subprocess environment that mirrors a real login shell.
 
@@ -204,6 +208,16 @@ def get_cli_env(cwd: str = "") -> dict:
     env["HOME"] = home
     env.setdefault("USER", os.getenv("USER", ""))
     env.setdefault("SHELL", os.getenv("SHELL", "/bin/bash"))
+
+    # The node's OWN credentials never reach a hand. get_cli_env merges the
+    # daemon's environment, which carries the node's .env: measured on gubei12
+    # 2026-09-24, all 21 of its keys reached every hand, including NODE_KEY and
+    # NODE_TOKEN -- the node's identity with agent-route -- readable by any
+    # prompt with `env`. No hand reads them (MCP keys are injected under their
+    # own names, even when their value falls back to NODE_TOKEN). The MCP keys
+    # themselves stay: `${VAR}` headers resolve from the hand's environment.
+    for k in NODE_ONLY_CREDENTIALS:
+        env.pop(k, None)
 
     # A subprocess spawned with cwd= must be told about it. Without this the
     # inherited PWD wins and the tool works in the wrong directory.
