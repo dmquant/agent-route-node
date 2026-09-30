@@ -176,6 +176,7 @@ async def _execute_one(task: dict, worker_url: str, auth_key: str) -> None:
                 if staged is not None and staged.present:
                     prompt = staged.prompt
 
+                result = None
                 try:
                     exec_kwargs = {"workspace_dir": workspace_dir}
                     if requested_model:
@@ -212,7 +213,9 @@ async def _execute_one(task: dict, worker_url: str, auth_key: str) -> None:
                     elif exit_code != 429:
                         exit_code = 429
 
-                await _post_result(client, worker_url, auth_key, task_id, exit_code, output)
+                metrics = _model_metrics(hand.name, requested_model, getattr(result, "metrics", None))
+                metrics["hand"] = hand.name
+                await _post_result(client, worker_url, auth_key, task_id, exit_code, output, metrics)
 
                 # Push generated workspace files back to R2 for cross-node visibility.
                 try:
@@ -324,19 +327,51 @@ async def _sync_workspace_from_r2(client, worker_url, auth_key, session_id, work
         _logger.debug(f"Workspace sync from R2 skipped: {e}")
 
 
-async def _post_result(client, worker_url, auth_key, task_id, exit_code, result_text):
+# The env var each hand reads when the task names no model. agy takes no per-call model at all.
+_MODEL_ENV = {"claude": "CLAUDE_DEFAULT_MODEL", "codex": "CODEX_DEFAULT_MODEL",
+              "gemini": "GEMINI_DEFAULT_MODEL", "opencode": "OPENCODE_MODEL"}
+
+
+def _model_metrics(hand_name, requested_model, hand_metrics=None):
+    """What model ran, and who says so (agent-route 1dd94f33).
+
+    model_source is "cli-reported" only when the hand parsed the model out of the CLI's own output;
+    otherwise "config": the model this node PASSED to the CLI (the task's model, else the hand's env
+    default). When neither exists the CLI picked its own default and this node does not know it:
+    model is None with model_source "cli-default" -- an unknown stays visibly unknown, never a guess.
+    """
+    m = dict(hand_metrics or {})
+    if m.get("model"):
+        m.setdefault("model_source", "cli-reported")
+        return m
+    if hand_name == "agy":
+        chosen = None  # agy ignores a per-call model; the task's model never reached it
+    else:
+        env = _MODEL_ENV.get(hand_name)
+        chosen = requested_model or (os.getenv(env) if env else None) or None
+        if hand_name == "ollama" and not chosen:
+            chosen = "llama3"  # OllamaHand's own hard-coded default
+    m["model"] = chosen
+    m["model_source"] = "config" if chosen else "cli-default"
+    return m
+
+
+async def _post_result(client, worker_url, auth_key, task_id, exit_code, result_text, metrics=None):
     """Post task result back to CF Worker callback endpoint."""
+    body = {"exitCode": exit_code, "resultText": result_text}
+    if metrics is not None:
+        body["metrics"] = metrics
     try:
         resp1 = await client.post(
             f"{worker_url}/api/tasks/{task_id}/complete",
-            json={"exitCode": exit_code, "resultText": result_text},
+            json=body,
             headers={"X-API-Key": auth_key, "Content-Type": "application/json"},
             timeout=30,
         )
         _logger.info(f"CALLBACK {task_id[:12]} | tasks/complete → {resp1.status_code}")
         resp2 = await client.post(
             f"{worker_url}/api/nodes/task-complete/{task_id}",
-            json={"exitCode": exit_code, "resultText": result_text},
+            json=body,
             headers={"X-API-Key": auth_key, "Content-Type": "application/json"},
             timeout=10,
         )
