@@ -1,0 +1,334 @@
+# MCP file delivery — stage 1 record
+
+Deployed: 2026-09-11 10:27:14 +08
+
+## What is on which node
+
+| node | hands | stage-1 code | PWD + stdin fixes | MCP configured |
+|---|---|---|---|---|
+| Studio02 | vane, opencode | **yes (smoke)** | yes | no — inert |
+| gubei12 | gemini, agy, claude, codex | **yes (smoke)** | yes | no — inert |
+| Studio01 | vane, opencode | no | yes | no |
+| Studio03 | vane, opencode | no | yes | no |
+| SG | gemini, agy, claude, codex | no | yes (deployed, restarted manually) | no |
+| CN-H100-DeepSeek | opencode | no | no — operator updates | no |
+
+The R2 pre-stage path (`_sync_workspace_from_r2`) is unchanged everywhere and
+still the only mechanism actually delivering files today.
+
+## Smoke results
+
+- Studio02 — opencode task exit 0; no `opencode.json` written; session.directory = workspace.
+- gubei12 — codex task exit 0; workspace holds only `.git`; no mcp config dir created.
+- Unit suite: 24 checks, off and on, including credential-never-on-disk and
+  merge-not-clobber. `python3 /tmp/t_mcp.py`.
+
+## Watchdog
+
+`scripts/mcp-watchdog.py --since-hours 24` compares smoke nodes against controls
+on non-zero exit rate and duration. Baseline at deploy (window is mostly
+pre-deploy traffic):
+
+    smoke    n=184  non-zero=4  2.2%    (Studio02 14.8%, gubei12 0.0%)
+    control  n=308  non-zero=4  1.3%    (Studio03 13.0%, Studio01 3.8%, SG 0%, H100 0%)
+
+Studio02 and Studio03 sit together at 13-15% — that is the pre-existing studio
+failure rate, not a deploy effect.
+
+## Blocked on ai-institute
+
+The MCP cannot be exercised until they answer `be99fc17-48e2-4b8d-bbf2-97aab997dd18`:
+endpoint URL and transport, whether NODE_TOKEN authenticates and in which header,
+the tool surface, and how the prompt names files. Turning it on is then two lines
+in `~/.agent-route/.env` on the two smoke nodes.
+
+## Corrections to an earlier version of this file
+
+An earlier version claimed claude's OAuth was dead on SG and gubei12. **That was
+wrong.** The test was run over ssh, and a process descended from an ssh session
+cannot read the macOS keychain where Claude Code keeps its OAuth credential:
+`security find-generic-password -w` exits 36 and the keychain answers "User
+interaction is not allowed." Production evidence contradicted the claim the whole
+time — SG 15/15 and gubei12 22/23 claude tasks at exit 0.
+
+Worse, the claim was self-inflicted. Restarting both daemons from an ssh session
+put them in an environment that cannot reach the keychain, so claude really was
+broken on both — by the restart, not by anything pre-existing. Both are now under
+the launchd GUI-domain agent, and claude executed inside the daemon returns
+`CLAUDE-OK` at exit 0 on both. Task flow confirms recovery: gubei12 16/16 and SG
+15/15 at exit 0 in the hour after.
+
+This is the third time the same shape has cost something here: **launchd and a
+terminal are different environments** — PATH, then stdin, now the keychain. A test
+run over ssh is not a test of production.
+
+## Open, genuinely
+
+1. ~~gemini~~ — **withdrawn as a defect.** gemini is obsolete: Google DeepMind
+   retired the CLI and agy replaced it. It has drawn **zero of the last 500 fleet
+   tasks**. Reporting it as a defect while deferring agy had the priorities exactly
+   backwards; agy carries 139 of those 500 across SG and gubei12 at zero failures
+   and is now a stage-1 hand.
+2. **vane health_check fails on studio02** — found only once the supervisor stopped
+   assuming every node runs opencode.
+3. **The supervisor was studio-shaped.** It hard-coded opencode and so reported FAIL
+   on sg01 while all four of its hands were healthy. The first repair was worse: it
+   read the hand registry, which is empty outside the daemon, so both checks
+   silently disappeared and the script reported HEALTHY having tested nothing. It
+   now asks the daemon what it runs and checks those.
+
+
+## Hand coverage, and why
+
+| hand | tasks in last 500 | MCP scope | stage 1 |
+|---|---|---|---|
+| codex | 164 | `-c` dotted overrides, nothing on disk | yes |
+| opencode | 159 | project-local `opencode.json` | yes |
+| agy | 139 | **node-global** `~/.gemini/config/mcp_config.json` | yes |
+| claude | 38 | `--mcp-config` + `--strict-mcp-config` | yes |
+| gemini | 0 | — obsolete, replaced by agy | no |
+
+agy is the odd one: no per-task scope exists, so its entry is node-global, written
+idempotently, touching only our own server name. `remove_agy_entry()` is how it
+goes away, because clearing `.env` does not stop a global registry offering a
+server.
+
+Smoke, all through the launchd daemon rather than an ssh shell:
+opencode `SMOKE-OK`, codex `SMOKE-OK`, claude `CLAUDE-OK`, agy `AGY-OK`, all exit 0,
+with the feature off and nothing written.
+
+## Smoke window — actually started 2026-09-11 11:29 +08
+
+Until now it had not. The code was deployed and inert, and the MCP could not be
+exercised because there was no endpoint. ai-institute answered (`44fec001`), and
+the gate cleared:
+
+- **Endpoint**: `POST https://ai-institute-worker.dmquant.workers.dev/api/mcp`, JSON-RPC 2.0 over HTTP, stateless. 48 tools.
+- **Auth**: the node's own `NODE_TOKEN` **is** an institute `nk_` token. `tools/call` authenticates **only** as `X-Admin-Token`.
+
+  > ⚠ **This line previously read "all three header forms return 200 — so the default config covers codex too." That was wrong and is retracted.** It was measured against `tools/list`, which requires no auth at all, so a 200 there proved nothing. The error is the scar behind `mcp_config.DEFAULT_HEADER` and behind `_prepare_codex` refusing rather than configuring.
+
+  Re-measured 2026-09-20 03:00 from Studio02, three arms against the live endpoint, one variable apart:
+
+  | arm | result |
+  |---|---|
+  | no auth | HTTP 401, `category: auth` |
+  | `Authorization: Bearer` | **HTTP 401, `category: auth`** — indistinguishable from sending nothing |
+  | `X-Admin-Token` | **HTTP 200**, real result (`files: []`, `source: archive`) |
+
+  **Consequence: `codex` cannot be configured.** Its only auth mechanism for a streamable-HTTP MCP server is `bearer_token_env_var`, and Bearer does not authenticate. Governed harness coverage is **3 of 4**, not 4.
+
+  The first run of this re-measurement returned 403 `error code: 1010` on *all three* arms and would have read as "auth fails everywhere" — that was Cloudflare rejecting `Python-urllib`'s User-Agent. **Send a normal `User-Agent` or the test measures the WAF, not the auth.**
+- **Tools verified live**: `sessions_get_files` returns a real file list; `sessions_workspace_read` returns content; the absence path returns `content: null` with an explicit status.
+
+Enabled on Studio02 and gubei12 (`AI_INSTITUTE_MCP_URL` in the data-dir `.env`).
+The R2 pre-stage is untouched and still running.
+
+**All four hands saw the server listed, live, each exit 0** — but *seeing* is not *calling*, and the difference is the whole error above:
+
+| hand | node | saw |
+|---|---|---|
+| opencode | Studio02 | `ai-institute_sessions_get_files`, `ai-institute_sessions_workspace_read` |
+| agy | gubei12 | `sessions_workspace_read` |
+| codex | gubei12 | `mcp__ai_institute__sessions_workspace_read` |
+| claude | gubei12 | see run log |
+
+⚠ **This table records `tools/list`, which requires no auth.** Every row here is
+compatible with that hand being unable to call a single tool. The `codex` row in
+particular: it listed the tool and could never have invoked it, because Bearer
+does not authenticate `tools/call`. Under `DEFAULT_HEADER = X-Admin-Token` codex
+is no longer configured at all, so it now sees nothing — which is the honest
+state rather than a regression.
+
+> **🔴 RETRACTED 2026-09-21 — the agy half of this paragraph is false, and it was
+> the operational half.** Kept in place rather than deleted, because a reader who
+> acted on it needs to find it here. Measured with a recording proxy
+> (`WS-C-CONTRACT.json` → `credential_expansion`): the credential arrived at the
+> endpoint as the **literal string `${...}`**, with a control confirming the
+> variable *was* present in agy's spawn environment at 67 characters — so this is
+> non-expansion, not an unset variable. **agy does NOT expand `${VAR}` in a
+> header. `AI_INSTITUTE_MCP_AGY_LITERAL` IS needed**, and for agy the literal is
+> required; the mitigation is the file mode (0600, node-global, written
+> idempotently). An agy literal is a per-machine value in a node-global file that
+> has been observed copied between hosts — that is how sg01 and gubei12 came to
+> present each other's identity on 2026-09-20.
+>
+> How it got here: the claim rested on **agy listing the tool**, and `tools/list`
+> needs no auth on this endpoint. That is the same unauthenticated read mistaken
+> for proof twice in this workstream.
+
+~~The two things that could only be verified with a live endpoint both hold: opencode
+expands `{env:VAR}` and agy expands `${VAR}` in a header. The registry on gubei12
+carries the reference, not the token, at 0600. `AI_INSTITUTE_MCP_AGY_LITERAL` is
+not needed.~~
+
+The opencode half stands and was re-confirmed by a served `tools/call`: opencode
+expands `{env:VAR}`, so its governed file carries the variable NAME and the spawn
+carries the value.
+
+**Still open**: ai-institute has not settled how a prompt names the files to fetch
+(their point 4 — a proposed `<INSTITUTE_FILES>` block, offered for rejection). Until
+that lands, the MCP is reachable but nothing tells a model which files to ask for,
+so this window tests the plumbing, not the delivery.
+
+## Design change: the node fetches the files, not the model
+
+The operator's call, and it is the better shape. The node parses `<INSTITUTE_FILES>`,
+fetches exactly the named files from the institute as a plain HTTP client, writes
+them into the workspace, and **verifies every one arrived before the hand is
+called at all.**
+
+Why this beats letting each hand fetch over MCP:
+
+- **A failure costs milliseconds instead of half an hour.** A fetch that fails
+  inside a model's tool loop reads as "I could not look", which is what sends a
+  model hunting — four tasks, 25–30 minutes each, $3.04, no output. A fetch that
+  fails in the node produces a task failure a person can read, with no model time
+  spent.
+- **One code path for every hand.** Doing it in the hands meant four configuration
+  surfaces, three tool namespaces, and codex locked out entirely because it can
+  only carry a credential as `Authorization: Bearer`, which the institute rejects.
+  The node has no such limit: it is an HTTP client with a token that works.
+- **Only the named files move.** No eager pull of a 33-file session for a task
+  that needs one.
+- **The prompt can assert completeness.** The block is rewritten with local paths
+  and a statement that the contents are complete and there is nothing to search
+  for — a short manifest the node verified is much harder to disbelieve than a
+  wall of inlined text.
+
+MCP stays configured for the institute's other 46 tools — `chain_graph_stats`,
+`thesis_evidence`, `portfolio_get` and the rest. Those are mid-reasoning lookups
+nobody can pre-stage. It is specifically file delivery that moved.
+
+Measured live on Studio02: two real files staged (22,567 and 49,250 bytes), prompt
+rewritten, model read from disk. A named file that does not exist fails staging
+with `not_found` and the task is not run. A/B with MCP on and off for opencode
+showed no slowdown from having it configured (83.5s / 105.0s / 31.5s, all exit 0).
+
+## The gate, run for real — 2026-09-20
+
+`scripts/verify_hand_mcp.py --live`. A recording proxy in front of the real
+institute, forwarding the hand's own credential, judging on what the institute
+answers. This is the first end-to-end evidence in this file: every row above
+records what a hand **saw** (`tools/list`) or what a config file **said**.
+
+| hand | node | verdict | what the institute actually served |
+|---|---|---|---|
+| opencode | Studio02 | **VERIFIED** | 6 calls, **`tools/call` at HTTP 200** |
+| claude | gubei12 | connected, not certified | `initialize`, `server/discover`, `tools/list` 200 — no `tools/call` |
+| codex | gubei12 | N/A | declined in code: Bearer only, `X-Admin-Token` not expressible |
+
+`opencode` on Studio02 is the one that closes something: project-local
+`opencode.json` **does** apply under dispatch, `{env:VAR}` expands into the
+header, and `NODE_TOKEN` authenticates as `X-Admin-Token` through to a served
+tool call. **OP-003 confirmed live rather than quoted.**
+
+`claude` proves the narrower thing worth proving — `--mcp-config` applies under
+dispatch, which is what the `~/.claude.json` cwd trap made worth testing at all.
+It is **not** certified: `tools/list` needs no auth here, so nothing in that run
+exercised the credential.
+
+### ⚠ The first three runs of this gate were wrong, and all three were the gate
+
+It returned `FAILED` for `opencode` three times, each with a clean reason that
+named a real-sounding node defect. Every one was my instrument:
+
+| verdict it printed | actual cause |
+|---|---|
+| `Invalid content type, expected "text/event-stream"` | the probe answered JSON; the hand was right |
+| `SSE error: undefined` | the probe emitted one frame and cannot finish a handshake |
+| `the hand did not dial — its config does not apply under dispatch` | the harness overlaid `os.environ` onto the spawn env, restoring the operator's `PWD` over the workspace one. **opencode resolves its project from `PWD`** (`app/hands/base.py:120`), so it loaded no config at all |
+
+Two more, found the same way: `do_GET = do_POST` turned the streamable-HTTP
+stream-open GET into an empty POST that came back **400** — which read as *the
+institute rejects opencode* — and relaying only `Content-Type` dropped
+`Mcp-Session-Id`, which breaks the session on request two.
+
+🔑 **This is the same failure as line 107 above, one layer down.** That claim
+was measured against the endpoint that needs no auth; these verdicts were
+measured against a probe that could not speak the protocol. In both cases the
+output was well-formed, confident, and about the instrument. **The gate is only
+worth its refusals if a refusal cannot mean "my probe is broken" — hence the
+positive control, and hence `--live` being the only mode that certifies.**
+
+## 🔴 Retraction — "agy expands `${VAR}` in a header" is false, 2026-09-20
+
+The line above reading *"opencode expands `{env:VAR}` and agy expands `${VAR}` in
+a header … `AI_INSTITUTE_MCP_AGY_LITERAL` is not needed"* is **withdrawn for
+agy.** The opencode half stands and is now proven by a served `tools/call`.
+
+**How it was wrong is the same way line 107 was wrong.** The agy half rested on
+agy *listing* the tool — and `tools/list` needs no auth on that endpoint. An
+unexpanded reference passes the listing and fails only inside the model's tool
+loop. **Second instance of the identical error in this one document**, and the
+first is annotated three sections up.
+
+Measured through the recording proxy, which reports the *shape* of the arriving
+credential without ever reading its value:
+
+| hand | form | expands? | evidence |
+|---|---|---|---|
+| opencode | `{env:VAR}` | ✅ yes | `tools/call` **200**, Studio02 |
+| codex | `bearer_token_env_var` | ✅ yes | `tools/call` **200**, gubei12 via ros-gateway |
+| **agy** | `${VAR}` | ❌ **no** | credential arrived as the literal string `${…}` |
+| claude | `${VAR}` | ⚠ unknown | has never completed a `tools/call` on this fleet |
+
+**The control that makes the agy row a finding rather than a guess:** an unset
+variable and a non-expanding hand produce the *identical* symptom. The variable
+was confirmed present in agy's spawn environment at 67 characters while the
+header still arrived as `${…}`. Both positions fail — bare `${VAR}` in
+`X-Admin-Token`, and `Bearer ${VAR}` in `Authorization`.
+
+⚠ **A recommendation was withdrawn before it was applied.** I had advised the
+operator to convert the node-global `ros-gateway` headers from literals to
+`${AI_INSTITUTE_MCP_KEY}`. **That would have broken gateway access on both
+nodes, silently** — listings would have stayed green. It also explains why
+those entries were literals in the first place: for agy, they have to be.
+
+## ✅ codex is no longer excluded — 4 of 4
+
+`codex` **VERIFIED**, `tools/call` served at HTTP 200 through `ros-gateway` on
+gubei12, reproduced twice (17.8s, 16.8s).
+
+The exclusion was never about the hand. `codex` can express exactly one
+credential form, `Authorization: Bearer`; the institute rejects it. Measured
+four arms one variable apart on `tools/call`, **the gateway requires it**:
+
+| arm | result |
+|---|---|
+| `Authorization: Bearer` only | **200** |
+| `X-Institute-Token` only | 401 — `"no bearer token"` |
+| no auth | 401 |
+
+So `X-Institute-Token` was inert — a second literal copy of the credential on
+disk buying no access, since removed from both nodes and independently
+re-verified as gone.
+
+## The `<INSTITUTE_FILES>` block grammar — declared, 2026-09-21
+
+`parse_block` enforces these. They were enforced and nowhere declared, and the
+caller who writes the block is **another estate**, so the rule it could break
+was one it had never been shown.
+
+```
+one JSON object per line; blank lines and lines starting with # are ignored
+session_id   REQUIRED, non-empty after trimming
+filename     REQUIRED, non-empty after trimming
+filename     must NOT start with '/' or '~'
+             must NOT contain '..'
+             must NOT start with a drive letter such as 'C:'
+bytes        optional
+why          optional, free text shown to the model beside the file
+```
+
+🔴 **A single malformed line refuses the WHOLE task, unrun, exit 65.** It does
+not stage what it can and report the rest. No file is written and the hand is
+never called.
+
+The same list is emitted in the staging failure text (`be14b6f`), but a caller
+who has not failed yet cannot read that — which is the whole defect one layer
+up. It is here so the rule is **inspectable before it costs anything**, which
+is the stronger of the two positions this workstream measured.
+
+If the grammar is wrong for what a caller needs to express — a session-relative
+subdirectory, say — the **rule** should change, not the error message.

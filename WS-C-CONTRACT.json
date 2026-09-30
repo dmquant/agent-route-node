@@ -1,0 +1,232 @@
+{
+  "contract": "ws-c/hand-mcp",
+  "version": "1.2.0",
+  "owner": "local-fabric",
+  "phase": 2,
+  "measured_at": "2026-09-20T20:50:00+08:00",
+  "measured_from": "Studio02 and gubei12, live endpoint, through the real dispatch path",
+  "_note": "Every field below is measured on a real node or read from the harness source. Nothing here is inferred from a vendor doc. Where a value is a limitation rather than a choice, `why` says what was measured.",
+  "authority": {
+    "node_token_barred": false,
+    "_superseded": {
+      "ruling": "OP-002 (2026-09-19): edge node model hands shall NOT authenticate using bare machine NODE_TOKENs.",
+      "status": "reversed in part by OP-003, same night. An earlier revision of this contract asserted node_token_barred: true on OP-002 alone."
+    },
+    "ruling": "OP-003: the node key IS the MCP auth token for edge nodes calling ai-institute, rho and epistates.",
+    "source": "operator:admin OP-003, recorded by agora-pm PM-060, 2026-09-20",
+    "_why_both_decrees_stand": "OP-002 was two rules wearing one sentence -- WHICH credential, and HOW it reaches the hand. OP-003 reverses the first and leaves the second intact, so this is not a contradiction and OP-002 is not void.",
+    "delivery_rule_still_binding": [
+      "no raw shell curl keys",
+      "no inheritance from a personal profile (~/.codex/config.toml, ~/.claude.json)",
+      "injected EXCLUSIVELY into governed MCP harness configuration files"
+    ],
+    "_this_contract_is_unaffected_below_this_block": "The credential IDENTITY changed; the transport did not. The harness table, the needs enumeration, the install gate and the coverage finding were written against the delivery rule, which stands unamended."
+  },
+  "institute_auth": {
+    "endpoint": "POST https://ai-institute-worker.dmquant.workers.dev/api/mcp",
+    "tools_call_accepts": [
+      "X-Admin-Token"
+    ],
+    "tools_call_rejects": [
+      "Authorization: Bearer",
+      "(no auth)"
+    ],
+    "tools_list_requires_auth": false,
+    "_trap_1": "tools/list needs no auth, so a 200 there proves nothing about tools/call. Reading one as proof is how the 'all three header forms work' claim shipped and stood for 8 days.",
+    "_trap_2": "Cloudflare answers 403 error 1010 to an unusual User-Agent. A probe sending Python-urllib's default UA returns 403 on every arm and reads as 'auth fails everywhere'. Send a normal User-Agent or the probe measures the WAF.",
+    "default_header_constant": "app/mcp_config.py::DEFAULT_HEADER"
+  },
+  "harnesses": [
+    {
+      "hand": "opencode",
+      "config_surface": "project-local opencode.json",
+      "scope": "per-task",
+      "credential_form": "{env:VAR} reference",
+      "credential_on_disk": false,
+      "auth_forms_expressible": [
+        "any header"
+      ],
+      "configurable_today": true,
+      "verified_under_dispatch": "Studio02, tools/call served at HTTP 200"
+    },
+    {
+      "hand": "claude",
+      "config_surface": "--mcp-config flag",
+      "scope": "per-task",
+      "credential_form": "env reference",
+      "credential_on_disk": false,
+      "auth_forms_expressible": [
+        "any header"
+      ],
+      "configurable_today": true,
+      "trap": "claude's OTHER config surface, ~/.claude.json mcpServers, is keyed by working directory. A dispatched hand runs in a fresh per-task workspace matching no configured project, so a project-scoped entry tests green by hand and does nothing under dispatch. Use --mcp-config, never the project surface.",
+      "verified_under_dispatch": "gubei12, connects and lists under --mcp-config; tools/call not yet exercised"
+    },
+    {
+      "hand": "codex",
+      "config_surface": "-c mcp_servers.* dotted TOML on the command line",
+      "scope": "per-task",
+      "credential_form": "bearer_token_env_var",
+      "credential_on_disk": false,
+      "auth_forms_expressible": [
+        "Authorization: Bearer"
+      ],
+      "configurable_today": false,
+      "why": "Its only auth mechanism for a streamable-HTTP MCP server is bearer_token_env_var, and the institute rejects Bearer on tools/call (401, category auth). Configuring it would hand a model a server that 401s inside its tool loop, so mcp_config declines instead.",
+      "revisit_when": "the institute accepts Authorization: Bearer on tools/call, or the hand gains a second auth mechanism"
+    },
+    {
+      "hand": "agy",
+      "config_surface": "~/.gemini/config/mcp_config.json",
+      "scope": "node-global",
+      "credential_form": "${VAR} reference",
+      "credential_on_disk": false,
+      "auth_forms_expressible": [
+        "any header"
+      ],
+      "configurable_today": true,
+      "why_node_global": "agy has no per-task configuration scope at all."
+    }
+  ],
+  "governed_coverage": {
+    "configurable": 4,
+    "total": 4,
+    "excluded": [],
+    "_changed": "3 of 4 -> 4 of 4 on 2026-09-20",
+    "_how": "codex was excluded because its only auth form is Authorization: Bearer and the institute rejects Bearer. ros-gateway REQUIRES Bearer -- measured four arms, one variable apart, on tools/call. The hand that could not reach the institute is the hand the gateway is reachable by.",
+    "certified_by_a_served_tools_call": [
+      "opencode -> institute (Studio02)",
+      "codex -> ros-gateway (gubei12)"
+    ],
+    "not_certified": [
+      "claude -> either (REFUSED over ssh: its keychain credential is unreadable from an ssh-descended process; must run under the launchd GUI-domain agent)",
+      "agy -> either (cannot expand an env reference; would need the literal form to be tested)"
+    ],
+    "_warning": "This still counts GOVERNED configuration, not access. Ungoverned routes to the same estate exist on these nodes and the install gate now enumerates them with every verdict."
+  },
+  "needs_the_surface_must_serve": {
+    "_principle": "A mandate does not create a path. A safe path with no entrance gets routed around, and the routing looks like competence. Enumerate the NEEDS, not only the protocol.",
+    "_evidence": "rho-lite reported against itself that every measurement it posted was made by hand-rolling curl with a bearer in a temp file, while its own gateway --sync had always dialled through MCP. 'The cause was not a missing rule; it was a missing door.'",
+    "needs": [
+      {
+        "need": "call one tool, once, ad hoc",
+        "no_config": true,
+        "no_session": true,
+        "shape": "gateway --call <tool> --args '<json>', credential resolved internally",
+        "verify": "ps shows no secret in argv",
+        "_why": "This is the need that bit rho-lite. If a hand cannot do this through MCP it will do it with curl, and the mandate then describes what is forbidden rather than what is possible."
+      },
+      {
+        "need": "dynamic traversal during reasoning",
+        "_why": "Operator ruling: research context cannot be transferred statically by prompt injection, nor by a pre-computed list of ids or citations. The hand must fetch and traverse related results mid-reasoning.",
+        "implication_for_institute_files": "The <INSTITUTE_FILES> pre-stage satisfies FILE DELIVERY only. It cannot satisfy traversal and was never meant to; both paths run."
+      }
+    ]
+  },
+  "constraints": [
+    {
+      "constraint": "DOC_CLIP = 24000",
+      "bounds": "the read, not the record",
+      "harness_specific": true,
+      "worst_hit": "codex",
+      "measured": "55 of 138 codex reports exceed it (40%), median report 22834 chars",
+      "source": "rho, 2026-09-19"
+    }
+  ],
+  "install_gate": {
+    "adopted_from": "epistates AAL-057",
+    "rule": "install RUNS verify FIRST and REFUSES ON FAILURE, writing nothing",
+    "verify": "run the hand's REAL invocation with a RECORDING PROXY in front of the real institute, forwarding the hand's own credential, and assert a tools/call is SERVED at HTTP 200",
+    "must_bind": "a LAN address",
+    "must_not_bind": "loopback",
+    "_why": "macOS Local Network privacy is not exercised by a request to 127.0.0.1, so a loopback verify passes on a host where the real traffic cannot leave -- a guard that cannot fail. Config inspection cannot detect the claude cwd trap either; running the binary and watching for a packet can.",
+    "exit_codes": {
+      "0": "verified -- the hand binary completed the round trip",
+      "1": "failed -- no round trip",
+      "2": "not applicable -- this hand is not configurable on this node"
+    },
+    "_superseded_verify": {
+      "was": "run the hand's REAL invocation against an ephemeral trap listener and assert a round trip",
+      "why_withdrawn": "A canned trap cannot complete an MCP handshake, so its refusals are statements about the probe. Measured on Studio02: a JSON trap made opencode report `Invalid content type, expected text/event-stream` and an SSE trap made it report `SSE error: undefined` -- both times opencode had dialled correctly and the PROBE rejected the HAND. As an install gate this would have refused working nodes with clean, false reasons.",
+      "trap_mode_retained_as": "transport-only; reports REACHED, never VERIFIED"
+    },
+    "verified_requires_tools_call": true,
+    "_why_tools_call_and_not_a_handshake": "tools/list needs no auth on this endpoint. Certifying on a handshake would repeat the exact error this contract was written after -- the eight-day claim that three header forms all worked, measured against tools/list -- and would certify codex, whose Bearer cannot call a tool at all.",
+    "probe_must_be_a_real_proxy": [
+      "relay each method as itself: streamable-HTTP opens its stream with GET, and aliasing GET to POST sends an empty POST upstream that returns 400, which reads as the institute rejecting the hand",
+      "relay every non-hop-by-hop RESPONSE header: initialize answers with Mcp-Session-Id and dropping it breaks the session on request two",
+      "forward the hand's own credential, never inject one: a proxy supplying its own auth tests transport and silently skips auth, and would report codex VERIFIED",
+      "do not overlay os.environ onto the spawn env: get_cli_env sets PWD to the workspace because opencode resolves its project from PWD, and restoring the operator's PWD makes the hand load no config at all -- the gate then manufactures the defect it exists to detect"
+    ]
+  },
+  "provisioning_rules": [
+    "Set AI_INSTITUTE_MCP_HEADER explicitly. Do not inherit the module default, even though the default is now correct -- an unset variable is a silent failure with no error surface.",
+    "Never write the credential LITERAL into a config file -- EXCEPT for agy, which does not expand env references in headers (see credential_expansion). For agy the literal is required, and the mitigation is the file mode: 0600, node-global, written idempotently.",
+    "For every hand that DOES expand a reference, the governed file carries the variable NAME and the spawn carries its value. Proven by a served tools/call on opencode and codex; claude is unproven and should not be assumed.",
+    "An agy literal is a per-machine value in a node-global file that has been observed copied between hosts. That is how sg01 and gubei12 came to present each other's identity on 2026-09-20. Treat any agy registry copy as a credential transposition risk and re-check by hash after one.",
+    "Run the install gate before writing any harness config."
+  ],
+  "measured_under_dispatch": {
+    "_what_this_is": "The first end-to-end evidence in this contract. Every earlier row recorded what a hand SAW (tools/list) or what a config file SAID. These rows record a tool invoked and served, through the same code path a dispatched task uses.",
+    "harness": "scripts/verify_hand_mcp.py --live",
+    "tool": "sessions_get_files, session_id 'verify-probe'",
+    "results": [
+      {
+        "hand": "opencode",
+        "node": "Studio02",
+        "verdict": "VERIFIED",
+        "detail": "6 calls in 10.7s: initialize, notifications/initialized, GET(stream), tools/list, tools/call, notifications/cancelled; tools/call SERVED at HTTP 200",
+        "proves": "project-local opencode.json applies under dispatch, {env:VAR} expands into the header, and NODE_TOKEN authenticates as X-Admin-Token end to end -- OP-003 confirmed live rather than quoted"
+      },
+      {
+        "hand": "claude",
+        "node": "gubei12",
+        "verdict": "CONNECTED, NOT CERTIFIED",
+        "detail": "5 calls in 13.3s: initialize, notifications/initialized, GET(stream), server/discover, tools/list at HTTP 200; no tools/call",
+        "proves": "--mcp-config DOES apply under dispatch, which is the claim the cwd trap made worth testing",
+        "does_not_prove": "auth -- tools/list needs none here"
+      },
+      {
+        "hand": "codex",
+        "node": "gubei12",
+        "verdict": "N/A",
+        "detail": "mcp_config declined: supports only Authorization: Bearer, header X-Admin-Token not expressible",
+        "proves": "the contract's codex row is enforced in code, not only asserted in this file"
+      }
+    ],
+    "_prompt_matters": "Two prompts produced FAILED verdicts that were about the prompt. 'Answer X' was answerable from the model's own head; 'list the available tools' sent opencode reading ~/.config/opencode/*.json until it hit a permission wall and exited in 5s having never dialled. A verify prompt must name ONE tool and ONE argument."
+  },
+  "credential_expansion": {
+    "_why_this_block_exists": "provisioning_rules said the credential must never be a literal, and claimed that was 'Verified live on opencode ({env:VAR}) and agy (${VAR}), not assumed'. The agy half was NOT verified -- it rested on agy listing the tool, and tools/list needs no auth on this endpoint. That is the SECOND time the same unauthenticated read was mistaken for proof in this workstream, and the first one is already annotated in STAGE1.md. A rule that cannot be satisfied is worse than one nobody wrote.",
+    "measured_2026-09-20_by_served_tools_call": [
+      {
+        "hand": "opencode",
+        "form": "{env:VAR}",
+        "expands": true,
+        "evidence": "tools/call SERVED at HTTP 200 on Studio02 with the reference in the config"
+      },
+      {
+        "hand": "codex",
+        "form": "bearer_token_env_var",
+        "expands": true,
+        "evidence": "tools/call SERVED at HTTP 200 on gubei12 through ros-gateway"
+      },
+      {
+        "hand": "agy",
+        "form": "${VAR}",
+        "expands": false,
+        "evidence": "the probe recorded the credential arriving as the literal string '${...}'; control confirms the variable WAS in agy's spawn environment at 67 chars, so this is non-expansion and not an unset variable",
+        "both_positions_fail": "bare ${VAR} in X-Admin-Token AND Bearer ${VAR} in Authorization",
+        "consequence": "AI_INSTITUTE_MCP_AGY_LITERAL IS needed; the earlier claim that it is not is withdrawn"
+      },
+      {
+        "hand": "claude",
+        "form": "${VAR}",
+        "expands": null,
+        "evidence": "UNVERIFIED -- claude has connected and listed under dispatch but has never completed a tools/call on this fleet, and listing proves nothing about the credential"
+      }
+    ],
+    "_the_failure_is_silent": "An unexpanded reference still passes tools/list, so a hand configured this way looks healthy in every listing and 401s only inside the model's tool loop -- the expensive failure this whole workstream was built to prevent.",
+    "_retracted_recommendation": "local-fabric recommended converting the node-global ros-gateway headers from literals to ${AI_INSTITUTE_MCP_KEY}. That would have broken gateway access on both nodes, silently. Withdrawn before it was applied. It also explains why those entries were literals: for agy they have to be."
+  }
+}

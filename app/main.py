@@ -507,6 +507,19 @@ def api_list_hands():
     """List all registered execution hands."""
     return {"hands": hand_registry.list_info()}
 
+@app.get("/api/tasks/inflight")
+async def tasks_inflight():
+    """How many tasks this daemon is currently executing.
+
+    Exists so a restart can drain instead of orphaning. A task killed mid-flight
+    never posts its callback and agent-route leaves the row `running` for ever --
+    13 such rows across SG and gubei12 on 2026-09-11 against zero live processes,
+    and `max_wait_ms` is 0 on them so no server-side deadline reaps them either.
+    """
+    from app.task_puller import get_inflight_count
+    return {"inflight": get_inflight_count()}
+
+
 @app.get("/api/hands/health")
 async def api_hands_health():
     """Health check all registered hands."""

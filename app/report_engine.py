@@ -8,6 +8,7 @@ import os
 import time
 import json
 import re
+from app.timebasis import time_basis
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from collections import defaultdict
@@ -52,6 +53,8 @@ def get_daily_stats(date_str: Optional[str] = None, days: int = 1) -> Dict[str, 
     start_ms, end_ms = _ts_range(date_str, days)
     result = {
         "date": date_str or datetime.now().strftime('%Y-%m-%d'),
+        # THE DATE ABOVE IS LOCAL AND THE WIRE DID NOT SAY SO. See app/timebasis.
+        "time_basis": time_basis(),
         "days": days,
         "period_start": start_ms,
         "period_end": end_ms,

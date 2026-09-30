@@ -219,11 +219,32 @@ class VaneHand(Hand):
                 if content:
                     title = meta.get("title", "Untitled")
                     url = meta.get("url", "")
+                    # SAY WHEN THIS IS A CUT, AND HOW BIG THE CUT IS.
+                    #
+                    # This content is EMBEDDED in a document a model reads, not
+                    # referenced by a path it can open — so the reader cannot
+                    # inspect what was removed and cannot tell 500 characters
+                    # from the whole source. That is the one case where a
+                    # marker is mandatory rather than an efficiency: an absence
+                    # verifiable in one step is safe, and this one is not
+                    # verifiable at all.
+                    #
+                    # Measured elsewhere in this estate the same night: a hand
+                    # given a declared shape over an unverifiable silence
+                    # reconstructed the missing content and presented it as
+                    # read. A truncated source under a heading naming it is
+                    # exactly that shape.
+                    body = content[:500]
+                    if len(content) > 500:
+                        body += ("\n\n[TRUNCATED — showing the first 500 of %d "
+                                 "characters. The rest was not fetched into this "
+                                 "document and is not available to you here.]"
+                                 % len(content))
                     lines.extend([
                         f"#### [{i}] {title}",
                         f"> Source: {url}",
                         "",
-                        content[:500],
+                        body,
                         "",
                     ])
 

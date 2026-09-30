@@ -47,9 +47,10 @@ import os
 from collections import Counter
 from typing import Optional, Callable, Any
 
+from app.mcp_config import prepare as mcp_prepare
 from app.hands.base import (
     Hand, HandResult, _NOISE_PATTERNS, resolve_cli_path, get_cli_env,
-    utf8_stream_decoder,
+    utf8_stream_decoder, spawn_kwargs, kill_process_tree,
 )
 
 
@@ -207,6 +208,29 @@ class _OpencodeEvents:
         return sections[0] if sections else ""
 
 
+def _metrics(events) -> dict:
+    """The numbers this hand already holds, as data instead of prose.
+
+    Reported on the timeout path too: a task killed at OPENCODE_TIMEOUT_S has usually spent real
+    money and often produced real output. On 2026-09-09, 17 of 29 killed tagger dispatches had
+    written parseable JSON before the kill, while every downstream table recorded them as having
+    delivered nothing.
+    """
+    dur = None
+    if events.start_ts and events.end_ts and events.end_ts > events.start_ts:
+        dur = round((events.end_ts - events.start_ts) / 1000, 1)
+    return {
+        "tokens_input": events.tokens_input,
+        "tokens_output": events.tokens_output,
+        "tokens_total": events.tokens_total,
+        "cost_usd": round(events.cost, 6),
+        "duration_s": dur,
+        "opencode_session_id": events.session_id,
+        "bash_commands": len(events.bash_commands),
+        "files_written": len(events.files_written),
+    }
+
+
 class OpencodeHand(Hand):
     name = "opencode"
     hand_type = "cli"
@@ -243,6 +267,21 @@ class OpencodeHand(Hand):
 
         os.makedirs(workspace_dir, exist_ok=True)
 
+        # Make the workspace a git worktree so opencode treats it as a project
+        # rather than a loose directory. This alone does NOT fix project
+        # resolution -- measured: a git-initialised workspace still attached to
+        # ~/.agent-route/node until PWD was corrected in get_cli_env. Kept
+        # because opencode's project features want a worktree, and agy_hand.py
+        # has always done it.
+        await self._ensure_git(workspace_dir)
+
+        # Second delivery path, inert unless AI_INSTITUTE_MCP_URL is set. The R2
+        # pre-stage in task_puller still runs either way; this only adds a server
+        # the model may call. See app/mcp_config.py.
+        mcp_plan = mcp_prepare("opencode", workspace_dir)
+        spawn_env = get_cli_env(workspace_dir)
+        spawn_env.update(mcp_plan.env)
+
         if on_log:
             short_dir = os.path.basename(workspace_dir)[:12]
             await on_log(json.dumps({
@@ -254,10 +293,19 @@ class OpencodeHand(Hand):
         try:
             process = await asyncio.create_subprocess_exec(
                 cmd, *args,
+                # Same blocking-stdin hazard agy_hand documents: the child inherits the
+                # node process's stdin, and a CLI that reads it at startup hangs forever
+                # on an open-but-silent pipe. Measured on opencode: identical command,
+                # same env, timed out at 60s inherited and returned in 7s on DEVNULL.
+                # Its own process group, so the wall below can reach whatever
+                # this hand starts. opencode is an npm .bin shim on the studios,
+                # so the binary named here is a launcher, not the work.
+                **spawn_kwargs(),
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workspace_dir,
-                env=get_cli_env(),
+                env=spawn_env,
             )
         except Exception as e:
             msg = f"Failed to spawn opencode: {e}"
@@ -342,11 +390,19 @@ class OpencodeHand(Hand):
             )
             exit_code = await process.wait()
         except asyncio.TimeoutError:
-            process.kill()
+            # Kill the GROUP, not the launcher. Measured 2026-09-21: a bare
+            # process.kill() here left the grandchild running while this
+            # returned "timed out" -- so the task read as walled and the model
+            # hand kept going, holding the workspace and spending tokens.
+            how = kill_process_tree(process)
             await process.wait()
+            logger.warning("opencode wall at %ss: %s", self.timeout_s, how)
             return HandResult(
-                output=f"opencode timed out after {self.timeout_s}s",
+                # Say what was killed, not just that time ran out. A wall that
+                # could not reach the children must not report a clean stop.
+                output=f"opencode timed out after {self.timeout_s}s ({how})",
                 exit_code=124,
+                metrics=_metrics(events),
             )
 
         # Build the final structured output. If events.render() comes back
@@ -359,7 +415,8 @@ class OpencodeHand(Hand):
         if exit_code != 0 and not output_text:
             output_text = f"opencode exited with code {exit_code}"
 
-        return HandResult(output=output_text or f"Exit code {exit_code}", exit_code=exit_code)
+        return HandResult(output=output_text or f"Exit code {exit_code}", exit_code=exit_code,
+                          metrics=_metrics(events))
 
     async def health_check(self) -> bool:
         path = resolve_cli_path("opencode")
@@ -372,3 +429,16 @@ class OpencodeHand(Hand):
             "description": self.description,
             "model": self.default_model or "(opencode default)",
         }
+
+    async def _ensure_git(self, workspace_dir: str):
+        git_dir = os.path.join(workspace_dir, ".git")
+        if not os.path.exists(git_dir):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "git", "init", cwd=workspace_dir,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.wait()
+            except Exception:
+                pass

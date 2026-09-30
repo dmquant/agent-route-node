@@ -12,6 +12,7 @@ Provides:
 import sqlite3
 import os
 import time
+from app.timebasis import time_basis
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from collections import defaultdict
@@ -199,9 +200,47 @@ def get_task_analytics(
 
     conn.close()
 
+    # AN EMPTY POPULATION MUST NOT RENDER AS A ROW OF ZEROS.
+    #
+    # epistates 3196c208-6f89-4ed6-93d0-d16dcdb7de14 named the class in one line:
+    # a DEFAULT standing in for a reading that did not happen, where the default is
+    # a legal value of the type and the arithmetic downstream accepts it. Every
+    # metric below already carries `if X else 0`, so with no tasks this endpoint
+    # serves success_rate 0, avg_latency 0 and min_latency 0 -- which a consumer
+    # reads as a system that fails everything and answers instantly, not as one
+    # nobody measured. `min` over an empty set is not zero; it is undefined.
+    #
+    # And the population is not hypothetically empty. Measured 2026-09-22:
+    # task_log holds 1 row on sg01 and 0 on gubei12, while sg01 executed 273 tasks
+    # that day -- because the puller does not route through task_manager, which
+    # app/task_puller.py's own docstring has said all along: it "only counts direct
+    # /execute and workflow calls".
+    #
+    # The existing fields are NOT changed. A live endpoint's zeros are what some
+    # consumer already parses, and turning them into nulls on a quiet afternoon is
+    # the shape epistates declined to ship for exactly this reason. So `measured`
+    # is ADDITIVE: it says how many tasks the numbers are over, and whether the
+    # figures beside it mean anything at all.
+    measured = {
+        "population": total,
+        "latency_samples": len(latencies),
+        "metrics_are_meaningful": total > 0,
+        "note": (None if total > 0 else
+                 "NO TASKS IN THIS WINDOW. Every metric below is a default, not a "
+                 "measurement: success_rate 0 means nothing was measured, not that "
+                 "everything failed, and min_latency 0 is undefined rather than fast."),
+        # The analytics store is fed by task_manager, which the task puller does
+        # not use. So this population counts direct /execute and workflow calls and
+        # NOT puller-driven work, which on this estate is nearly all of it.
+        "excludes": "puller-driven tasks (task_manager is not on that path)",
+    }
+
     return {
         "date": date_str or datetime.now().strftime("%Y-%m-%d"),
+        # LOCAL, and the wire did not say so until now. See app/timebasis.
+        "time_basis": time_basis(),
         "days": days,
+        "measured": measured,
         "metrics": {
             "total_tasks": total,
             "success_count": success_count,
@@ -286,9 +325,24 @@ def get_benchmark_comparison(
 
 
 def _empty_analytics(date_str, days):
+    # THIS is the function that actually serves an empty window -- get_task_analytics
+    # returns here before any metric is computed, so the `measured` block added to
+    # the main path never reached the case it was written for. Found by the test,
+    # not by reading the patch.
     return {
         "date": date_str or datetime.now().strftime("%Y-%m-%d"),
+        # LOCAL, and the wire did not say so until now. See app/timebasis.
+        "time_basis": time_basis(),
         "days": days,
+        "measured": {
+            "population": 0,
+            "latency_samples": 0,
+            "metrics_are_meaningful": False,
+            "note": ("NO TASKS IN THIS WINDOW. Every metric below is a default, not a "
+                     "measurement: success_rate 0 means nothing was measured, not that "
+                     "everything failed, and min_latency 0 is undefined rather than fast."),
+            "excludes": "puller-driven tasks (task_manager is not on that path)",
+        },
         "metrics": {
             "total_tasks": 0, "success_count": 0, "error_count": 0,
             "success_rate": 0, "avg_latency_ms": 0, "p50_latency_ms": 0,

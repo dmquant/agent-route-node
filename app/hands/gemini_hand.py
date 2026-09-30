@@ -135,10 +135,15 @@ class GeminiHand(Hand):
         try:
             process = await asyncio.create_subprocess_exec(
                 cmd, *args,
+                # Same blocking-stdin hazard agy_hand documents: the child inherits the
+                # node process's stdin, and a CLI that reads it at startup hangs forever
+                # on an open-but-silent pipe. Measured on opencode: identical command,
+                # same env, timed out at 60s inherited and returned in 7s on DEVNULL.
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workspace_dir,
-                env=get_cli_env(),
+                env=get_cli_env(workspace_dir),
             )
         except Exception as e:
             msg = f"Failed to spawn gemini: {e}"

@@ -1,0 +1,304 @@
+"""A failed fetch saved as the file: does the manifest say so?
+
+Reported by the operator 2026-09-21 (`85312249-0c48-4aa0-9a97-05991829c320`):
+a `recent_reports.md` of 236 bytes whose first line is `{"error"`. Something
+fetched it with no credential, got a 401 JSON body, and saved that as the file.
+The institute serves it with status ok and a byte count; this node stages it;
+the manifest tells the hand the file is COMPLETE -- true of the transfer, and
+silent about whether the bytes are the document.
+
+THE POINT OF THIS FILE IS THE NEGATIVE CONTROLS.
+
+agora-pm named the trap in the same hour the defect was reported: a check whose
+subject is a TEXTUAL PATTERN fires on any text that DISCUSSES the pattern. This
+estate writes documents about 401 bodies -- including the docstring of the
+function under test, which contains the exact string a naive rule matches. If
+the detector cannot tell a refusal from a document about refusals, it is worse
+than nothing, because it would flag this repository's own writing.
+
+No network: every payload here is a literal.
+"""
+import importlib, json, os, sys, tempfile
+
+sys.path.insert(0, os.getcwd())
+os.environ.setdefault("AI_INSTITUTE_MCP_URL", "https://institute.example/api/mcp")
+os.environ.setdefault("AI_INSTITUTE_MCP_KEY", "nk_institute")
+
+from app import institute_files as F
+importlib.reload(F)
+
+fails = []
+
+
+def check(label, cond, detail=""):
+    print("  %-4s %s%s" % ("ok" if cond else "FAIL", label, ("  " + detail) if detail else ""))
+    if not cond:
+        fails.append(label)
+
+
+# The operator's payload, verbatim.
+OPERATOR = ('{"error":"X-Admin-Token or X-API-Key (viewer:read|analysts:read) required",'
+            '"credential_presented":false,"refusal":"absent","detail":"no credential was '
+            'presented on this request. Send X-API-Key, Authorization: Bearer, or '
+            'X-Admin-Token."}')
+
+print("MUST FIRE — a refusal saved as content")
+r = F.refusal_envelope(OPERATOR)
+check("the operator's exact 401 body is caught", bool(r), "%d bytes" % len(OPERATOR))
+check("the description names the error", bool(r) and "X-Admin-Token" in r)
+check("the description tells the hand what to do", bool(r) and "missing" in r)
+check("`message`+`code` shape also caught",
+      bool(F.refusal_envelope('{"message":"unauthorized","code":401}')))
+
+print("\nMUST FIRE — the BARE pre-2026-09-15 envelope (ai-institute: 548 of 1,124)")
+BARE = '{"error":"X-Admin-Token or X-API-Key (viewer:read) required"}'
+b = F.refusal_envelope(BARE)
+check("the 60-byte one-member form is caught", bool(b), "%d bytes" % len(BARE))
+check("it is reported AS a bare envelope", bool(b) and "BARE envelope" in b)
+check("a bare {message} form too", bool(F.refusal_envelope('{"message":"unauthorized"}')))
+check("error+code with no other members", bool(F.refusal_envelope('{"error":"nope","code":401}')))
+
+print("\nMUST FIRE — a body that DECLARES its own failure (rho's third shape)")
+RHO = '{"version":null,"result":null,"success":false,"message":"\u8fd4\u56de\u5b57\u6bb5\u53c2\u6570\u4e0d\u80fd\u4e3a\u7a7a","code":9501}'
+check("rho's exact 101-byte body", bool(F.refusal_envelope(RHO)))
+check("success:false with `msg` rather than `message`",
+      bool(F.refusal_envelope('{"success":false,"data":null,"msg":"bad"}')))
+check("success:false carrying NO reason at all",
+      bool(F.refusal_envelope('{"success":false,"data":null}')))
+check("ok:false with `reason`",
+      bool(F.refusal_envelope('{"ok":false,"result":null,"reason":"denied"}')))
+_n = F.refusal_envelope('{"success":false,"data":null}')
+check("a failure with no reason SAYS it carries none",
+      bool(_n) and "no reason at all" in _n)
+
+print("\nMUST NOT FIRE — ai-institute's sharpening: a false flag BESIDE a real payload")
+check("success:false carrying actual rows is a DOCUMENT",
+      F.refusal_envelope('{"success":false,"message":"partial","rows":[1,2,3]}') is None)
+check("success:false with a populated result",
+      F.refusal_envelope('{"version":"34bda","result":{"pages":1,"data":[1]},'
+                         '"success":false,"code":9201}') is None)
+check("but success:false with result NULL is still a refusal",
+      bool(F.refusal_envelope('{"version":null,"result":null,"success":false,'
+                              '"message":"empty","code":9201}')))
+check("and an empty list payload does not rescue it",
+      bool(F.refusal_envelope('{"success":false,"data":[],"message":"none"}')))
+
+print("\nMUST NOT FIRE — rho's own negative control, and silence")
+check("the SAME API's successful envelope, identical members",
+      F.refusal_envelope('{"version":"1","result":{"rows":[1]},"success":true,'
+                         '"message":"ok","code":0}') is None)
+check("an ABSENT success flag is not a declared failure",
+      F.refusal_envelope('{"version":"1","result":{"rows":[1]}}') is None)
+check("success:true beside a populated error field is still not a refusal",
+      F.refusal_envelope('{"success":true,"rows":[1],"error":"none"}') is None)
+
+print("\nMUST NOT FIRE — the widening must not swallow documents")
+DOC_ABOUT_401 = """# Auth troubleshooting
+
+When no credential is sent the institute answers 401 with a body like
+`{"error":"X-Admin-Token or X-API-Key required","credential_presented":false}`.
+Note `refusal: "absent"` distinguishes an absent credential from a wrong one.
+"""
+check("a markdown doc DISCUSSING a 401 body is not flagged",
+      F.refusal_envelope(DOC_ABOUT_401) is None)
+check("this detector's OWN docstring is not flagged",
+      F.refusal_envelope(F.refusal_envelope.__doc__) is None)
+check("this test file's own docstring is not flagged",
+      F.refusal_envelope(__doc__) is None)
+
+print("\nMUST NOT FIRE — documents that merely contain an error member")
+check("a document that RECORDS an error keeps its payload",
+      F.refusal_envelope('{"error":"none","rows":[1,2,3]}') is None)
+check("an error field beside real data is not a refusal",
+      F.refusal_envelope('{"error":"partial","items":[1],"total":5}') is None)
+check("a bare error saying SUCCESS is still not a refusal",
+      F.refusal_envelope('{"error":"ok"}') is None)
+check("a JSON array", F.refusal_envelope('[{"error":"x","detail":"y"}]') is None)
+check("empty", F.refusal_envelope("") is None)
+check("plain prose", F.refusal_envelope("The report is attached.") is None)
+
+# Found by sweeping real traffic, not by imagining cases: 11 of 393 hits across
+# both nodes were {"error":"ok"}, which is how several upstream APIs spell
+# SUCCESS. The guard would have declined to publish them.
+for ok_val in ("ok", "OK", "success", "none", "0"):
+    check("an `error` member saying %r is not a refusal" % ok_val,
+          F.refusal_envelope('{"error":"%s","code":200}' % ok_val) is None)
+check("a REAL error with a code is still caught",
+      bool(F.refusal_envelope('{"error":"RZYE\u6392\u5e8f\u5217\u4e0d\u5b58\u5728","code":-1}')))
+big = '{"error":"x","detail":"' + ("y" * 5000) + '"}'
+check("a large body is a document, not a refusal", F.refusal_envelope(big) is None,
+      "%d bytes" % len(big))
+
+print("\nEND TO END — does the manifest carry the marker?")
+ws = tempfile.mkdtemp()
+good = os.path.join(ws, "alpha.md")
+bad = os.path.join(ws, "recent_reports.md")
+open(good, "w").write("# Alpha\n\nReal content.\n")
+open(bad, "w").write(OPERATOR)
+files = [
+    F.StagedFile(ref=F.FileRef("s1", "alpha.md", why="the real one"),
+                 ok=True, path=good, written=os.path.getsize(good)),
+    F.StagedFile(ref=F.FileRef("s1", "recent_reports.md", why="the analyst reports"),
+                 ok=True, path=bad, written=len(OPERATOR),
+                 refusal_shaped=F.refusal_envelope(OPERATOR) or ""),
+]
+block = F._rewrite("<INSTITUTE_FILES>\n{}\n</INSTITUTE_FILES>", files, ws)
+lines = [l for l in block.splitlines() if l.startswith("{")]
+entries = {json.loads(l)["filename"]: json.loads(l) for l in lines}
+check("the refusal file is marked",
+      "REFUSAL_SAVED_AS_CONTENT" in entries["recent_reports.md"])
+check("the real file is NOT marked",
+      "REFUSAL_SAVED_AS_CONTENT" not in entries["alpha.md"])
+check("the marked file still carries its byte count and path",
+      entries["recent_reports.md"]["bytes"] == len(OPERATOR)
+      and entries["recent_reports.md"]["path"] == bad)
+
+print("\nTHE PRODUCER SIDE — the upload must not publish a saved refusal")
+import asyncio
+from app import workspace_sync
+
+calls = []
+
+
+class _FakeResp:
+    status_code = 200
+
+
+class _FakeClient:
+    async def post(self, url, **kw):
+        calls.append(kw.get("json", {}).get("path"))
+        return _FakeResp()
+
+
+async def _upload(name, text):
+    d = tempfile.mkdtemp()
+    fp = os.path.join(d, name)
+    open(fp, "w").write(text)
+    return await workspace_sync._upload_file(
+        _FakeClient(), "https://worker.example", "k", "s1", name, fp)
+
+check("a real document is still uploaded",
+      asyncio.run(_upload("alpha.md", "# Alpha\n\nReal content.\n")) is True)
+check("the 401 body is REFUSED, not published",
+      asyncio.run(_upload("recent_reports.md", OPERATOR)) is False)
+check("only the real file reached the worker", calls == ["alpha.md"], repr(calls))
+check("a doc ABOUT a 401 is still uploaded",
+      asyncio.run(_upload("auth-notes.md", DOC_ABOUT_401)) is True)
+
+print("\nTHE HAND MUST LEARN WHY — ai-institute's question about the first version")
+d = tempfile.mkdtemp()
+fp = os.path.join(d, "recent_reports.md")
+open(fp, "w").write(OPERATOR)
+asyncio.run(workspace_sync._upload_file(
+    _FakeClient(), "https://worker.example", "k", "s1", "recent_reports.md", fp))
+marker = fp + ".NOT_PUBLISHED.md"
+check("a marker is left beside the file", os.path.exists(marker))
+mt = open(marker).read() if os.path.exists(marker) else ""
+check("it says the file was not published", "NOT published" in mt)
+check("it carries the reason", "refusal" in mt.lower())
+check("it says the local file was not deleted", "nothing was deleted" in mt)
+check("it tells the hand to report the document MISSING", "MISSING" in mt)
+check("the original file is untouched", open(fp).read() == OPERATOR)
+check("the marker itself would publish normally (it is not a refusal)",
+      F.refusal_envelope(mt) is None)
+
+print("\nUNIT HONESTY — a decoded length is CHARACTERS, never bytes")
+_utf8 = '{"error":"\u8fd4\u56de\u6570\u636e\u4e3a\u7a7a","credential_presented":false}'
+_msg = F.refusal_envelope(_utf8)
+check("a multi-byte body is still detected", bool(_msg))
+check("and the size is reported as CHARS, not bytes",
+      bool(_msg) and "-char" in _msg and "-byte" not in _msg)
+check("the char count is len(str), which is SHORTER than the byte count",
+      len(_utf8) < len(_utf8.encode("utf-8")),
+      "%d chars vs %d bytes" % (len(_utf8), len(_utf8.encode("utf-8"))))
+_loc = LC_UNIT = None
+
+print("\nLOCATOR CONTRADICTION — rho's class: the body is not the document")
+from app.workspace_sync import locator_contradiction as LC
+check("an error PAGE saved as .csv is flagged",
+      bool(LC("CPI.csv", '<!DOCTYPE html><html><head><title>Error - St. Louis Fed</title>')))
+check("a 503 page saved as .json is flagged",
+      bool(LC("d.json", '<html><head><title>503 Service Temporarily Unavailable</title>')))
+_n = LC("x.json", "<!DOCTYPE html><html><head>nothing</head>")
+check("a page with NO title still flags, and says so",
+      bool(_n) and "no title at all" in _n)
+check("the message tells the reader to treat the data as MISSING",
+      "MISSING" in (LC("a.csv", "<html><head>x</head>") or ""))
+check("the locator message says CHARS when no byte count is given",
+      "chars" in (LC("a.csv", "<html><head>x</head>") or ""))
+check("and says BYTES when the caller measured the file",
+      "28936 bytes" in (LC("a.csv", "<html><head>x</head>", byte_size=28936) or ""))
+check("a multi-byte page reports the BYTE count, not the char count",
+      "bytes" in (LC("a.csv", "<html><head>\u8fd4\u56de</head>", byte_size=99) or "")
+      and "chars" not in (LC("a.csv", "<html><head>\u8fd4\u56de</head>", byte_size=99) or ""))
+
+print("\n  REAL BODIES from the operator's failing task on sg01, 2026-09-22")
+# The detection used to be a vocabulary -- `<!doctype html`, `<html`, `<head>`.
+# Measured against that session directory it flagged 1 of 3 real contradictions.
+# These four are the exact bytes, and the Stooq page is why: it carries none of
+# the three markers.
+STOOQ = ("<meta charset=utf-8><title>Stooq</title><center style=font-family:arial;"
+         "margin-top:50px><p><a href=/><img src=//static.stooq.com/stooq.svg height=68>"
+         "</a><p style=font-size:x-large>The page you requested does not exist<br>"
+         "or has been moved<p><small><a href=/>Main Page</a>")
+DENIED = "<HTML><HEAD>\n<TITLE>Access Denied</TITLE>\n</HEAD><BODY>\n<H1>Access Denied</H1>"
+check("a Stooq error page in a .csv is flagged (NO doctype, NO <html>, NO <head>)",
+      "HTML PAGE" in (LC("aapl.csv", STOOQ, byte_size=271) or ""))
+check("the same page under market.csv is flagged",
+      "HTML PAGE" in (LC("market.csv", STOOQ, byte_size=271) or ""))
+check("an Access Denied page in a .json is flagged",
+      "does not parse as JSON" in (LC("cnbc_aapl.json", DENIED, byte_size=420) or ""))
+check("a 23-byte plain-text refusal in a .json is flagged, and NOT called HTML",
+      "NOT THE DECLARED TYPE" in (LC("spx.json", "Edge: Too Many Requests", byte_size=23) or ""))
+check("valid JSON carrying a NESTED failure is NOT this guard's business",
+      LC("nasdaq_SPX.json", '{"data":null,"status":{"rCode":400}}', byte_size=142) == "")
+
+print("\n  and the deliberate MISSES, which are ai-institute's over-block rule")
+check("real CSV is clean", LC("x.csv", "date,value\n2026-01,3.1\n") == "")
+check("real JSON is clean", LC("d.json", '{"rows":[1,2,3]}') == "")
+check("HTML in a .txt is NOT flagged (a scrape may be the point)",
+      LC("page.txt", "<!DOCTYPE html><html><head><title>Sina</title>") == "")
+check("HTML in a .md is NOT flagged", LC("n.md", "<!DOCTYPE html><html>") == "")
+
+print("\nthe marker must not break the sync when the workspace is read-only")
+ro = tempfile.mkdtemp()
+rofp = os.path.join(ro, "x.md")
+open(rofp, "w").write(OPERATOR)
+os.chmod(ro, 0o500)
+try:
+    r_ok = asyncio.run(workspace_sync._upload_file(
+        _FakeClient(), "https://worker.example", "k", "s1", "x.md", rofp)) is False
+finally:
+    os.chmod(ro, 0o700)
+check("still refuses, does not raise, when the marker cannot be written", r_ok)
+
+print("\nUNREADABLE STATE IS NOT EMPTY STATE")
+# An unreadable sync-state file used to land on {} silently, which reads as
+# "nothing has ever been synced" and re-uploads every tracked file.
+sd = tempfile.mkdtemp()
+orig_state = workspace_sync.STATE_FILE
+try:
+    workspace_sync.STATE_FILE = os.path.join(sd, "state.json")
+    workspace_sync._load_state()
+    check("no state file at all is a clean empty state",
+          workspace_sync._sync_state == {} and not workspace_sync._state_was_unreadable)
+
+    open(workspace_sync.STATE_FILE, "w").write('{"a": 1.0}')
+    workspace_sync._load_state()
+    check("a readable state file loads", workspace_sync._sync_state == {"a": 1.0})
+    check("and is not marked unreadable", not workspace_sync._state_was_unreadable)
+
+    open(workspace_sync.STATE_FILE, "w").write("{ this is not json")
+    workspace_sync._load_state()
+    check("an UNREADABLE state file still yields an empty dict",
+          workspace_sync._sync_state == {})
+    check("but the caller can tell it apart from having no state",
+          bool(workspace_sync._state_was_unreadable),
+          workspace_sync._state_was_unreadable[:60])
+    check("the unreadable file is not deleted",
+          os.path.exists(workspace_sync.STATE_FILE))
+finally:
+    workspace_sync.STATE_FILE = orig_state
+
+print("\n%s" % ("ALL PASS" if not fails else "FAILED: %s" % ", ".join(fails)))
+sys.exit(1 if fails else 0)

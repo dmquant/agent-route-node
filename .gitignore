@@ -9,3 +9,12 @@ dist/
 build/
 .DS_Store
 
+# Runtime state, not source. app/sessions.db was tracked on a PUBLIC repo with an
+# api_key column and real session titles in it -- the rows happened to be test
+# data ("say hello in one word") and clients was empty, but the next commit would
+# not have been. Untracked here; the blobs already in history are untouched.
+*.db
+*.db-shm
+*.db-wal
+.workspace_sync_state.json
+workspaces/

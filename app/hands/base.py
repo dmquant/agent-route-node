@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Optional, AsyncGenerator, Callable, Any, List
 import codecs
 import os
+import signal
 import shutil
 import re
 
@@ -62,6 +63,14 @@ def resolve_cli_path(binary: str) -> str:
         "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin",
         os.path.expanduser("~/.local/bin"),
         os.path.expanduser("~/.npm-global/bin"),
+        # Modern single-binary CLIs install under ~/.<tool>/bin and put it on PATH from the shell
+        # profile only, so a non-interactive context -- an ssh command, a daemon started by a
+        # script, launchd -- cannot see them. opencode lives at ~/.opencode/bin/opencode on every
+        # host here and was not searched: on 2026-09-09 a uvicorn restart from a shell without the
+        # profile made every hand unresolvable for twenty minutes while /api/agents still answered
+        # 200, because the health endpoint reports the server rather than the tools.
+        os.path.expanduser(f"~/.{binary}/bin"),
+        os.path.expanduser("~/.bun/bin"),
     ]
 
     # Custom NODE_BIN from env
@@ -101,13 +110,73 @@ def resolve_cli_path(binary: str) -> str:
     return binary
 
 
-def get_cli_env() -> dict:
+# A hand is never the only process it starts.
+#
+# MEASURED 2026-09-21 on this machine, after rho reported the shape from its own
+# host: a wall that calls process.kill() on a launcher kills the LAUNCHER. A
+# grandchild kept writing for the full three seconds after the wall fired -- 4
+# lines at the kill, 10 afterwards -- while the same test with a new session and
+# a group kill stopped it dead at 4 and 4.
+#
+# That matters here because almost nothing this node runs is a leaf process:
+#
+#     claude, codex   npx -> node -> the real CLI
+#     opencode        an npm .bin shim on the studios
+#     any hand        spawns providers and tool processes of its own
+#
+# So a timed-out task reported as killed can leave a model hand running, still
+# holding the workspace and still spending tokens, while the record says the
+# task ended at the wall. rho's phrasing is the one to keep: the guard's FAILURE
+# reads exactly like the guard never firing.
+#
+# Two calls, and they must be used together -- a group kill needs a group, and
+# start_new_session is what makes one.
+def spawn_kwargs() -> dict:
+    """Give a spawned hand its own process group, so a wall can reach its children."""
+    return {"start_new_session": True}
+
+
+def kill_process_tree(process, sig=signal.SIGKILL) -> str:
+    """Kill the hand AND everything it started. Returns what actually happened.
+
+    Falls back to killing the direct child when there is no group to kill --
+    which is the old behaviour, and is still better than raising inside a
+    timeout handler.
+    """
+    pid = getattr(process, "pid", None)
+    if pid is None:
+        return "no pid"
+    try:
+        os.killpg(os.getpgid(pid), sig)
+        return "killed process group %d" % os.getpgid(pid)
+    except (ProcessLookupError, PermissionError, OSError) as e:
+        try:
+            process.kill()
+            return "group kill unavailable (%s); killed pid %d only — " \
+                   "CHILDREN MAY SURVIVE" % (type(e).__name__, pid)
+        except Exception as e2:
+            return "could not kill pid %d: %s" % (pid, e2)
+
+
+# The node's identity with agent-route and its admin fallback: never a hand's.
+NODE_ONLY_CREDENTIALS = ("NODE_KEY", "NODE_TOKEN", "ADMIN_API_KEY")
+
+
+def get_cli_env(cwd: str = "") -> dict:
     """Build a subprocess environment that mirrors a real login shell.
 
     CLI tools (claude, gemini, codex) authenticate via their own login sessions
     stored in config directories (~/.claude, ~/.config/gemini, etc.).
     The subprocess must have the correct HOME, XDG paths, and full PATH
     so the CLI tools can find their auth tokens.
+
+    Pass `cwd` whenever the subprocess is spawned with `cwd=`. The daemon runs
+    from the node repo, so both the login shell below and os.environ carry that
+    path in PWD, and asyncio's `cwd=` changes the real working directory
+    without touching the variable. Tools that trust PWD over getcwd() then
+    resolve their project to the node repo -- measured on opencode: same
+    binary, same git-initialised directory, only PWD differing, and
+    session.directory follows PWD every time.
     """
     # Start from a login shell's full environment — not the stripped venv env.
     # This ensures CLI auth sessions, PATH, and all config are available.
@@ -139,6 +208,22 @@ def get_cli_env() -> dict:
     env["HOME"] = home
     env.setdefault("USER", os.getenv("USER", ""))
     env.setdefault("SHELL", os.getenv("SHELL", "/bin/bash"))
+
+    # The node's OWN credentials never reach a hand. get_cli_env merges the
+    # daemon's environment, which carries the node's .env: measured on gubei12
+    # 2026-09-24, all 21 of its keys reached every hand, including NODE_KEY and
+    # NODE_TOKEN -- the node's identity with agent-route -- readable by any
+    # prompt with `env`. No hand reads them (MCP keys are injected under their
+    # own names, even when their value falls back to NODE_TOKEN). The MCP keys
+    # themselves stay: `${VAR}` headers resolve from the hand's environment.
+    for k in NODE_ONLY_CREDENTIALS:
+        env.pop(k, None)
+
+    # A subprocess spawned with cwd= must be told about it. Without this the
+    # inherited PWD wins and the tool works in the wrong directory.
+    if cwd:
+        env["PWD"] = cwd
+        env.pop("OLDPWD", None)
 
     # Ensure XDG dirs are set (some tools use these for config)
     env.setdefault("XDG_CONFIG_HOME", os.path.join(home, ".config"))
@@ -268,6 +353,12 @@ class HandResult:
     exit_code: int
     image_b64: Optional[str] = None
     artifacts: List[str] = field(default_factory=list)
+    # The hand already counts tokens and cost off opencode's step_finish events, then renders them
+    # into a markdown line -- so every consumer had to read them back out of prose. Neither the
+    # institute's queue nor agent-route's task record holds a token or cost column, and on
+    # 2026-09-09 both sourced the figure from an operator's paste of this hand's own output string.
+    # Carried structurally now. Optional, so hands that do not measure are unaffected.
+    metrics: Optional[dict] = None
 
     @property
     def success(self) -> bool:
@@ -279,6 +370,8 @@ class HandResult:
             d["image_b64"] = self.image_b64
         if self.artifacts:
             d["artifacts"] = self.artifacts
+        if self.metrics:
+            d["metrics"] = self.metrics
         return d
 
 

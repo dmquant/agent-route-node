@@ -12,23 +12,54 @@ from pathlib import Path
 import httpx
 
 from app.config import get_workspaces_dir, get_data_dir
+# One detector, two sites: the upload refuses to publish a saved refusal and the
+# staging manifest marks one that is already stored. Sharing the function is the
+# point -- two spellings of "is this a refusal?" would drift, and the one that
+# drifted would be the one nobody was watching.
+from app.institute_files import refusal_envelope
 WORKSPACES_DIR = get_workspaces_dir()
 STATE_FILE = os.path.join(get_data_dir(), '.workspace_sync_state.json')
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
-IGNORE_PATTERNS = {'.git', '__pycache__', 'node_modules', '.DS_Store', '.venv', '.env', '.antigravitycli'}
+IGNORE_PATTERNS = {'.git', '__pycache__', 'node_modules', '.DS_Store', '.venv', '.env', '.antigravitycli',
+                   # Written by app/mcp_config.py into the workspace. Node-local
+                   # CLI configuration, not task output -- and belt-and-braces
+                   # against ever shipping a credential to R2, even though the
+                   # file carries an env reference rather than the value.
+                   'opencode.json', '.mcp.json'}
 
 _sync_state: dict[str, float] = {}  # file_key -> last synced mtime
+# Non-empty when the state file EXISTS but could not be parsed; see _load_state.
+_state_was_unreadable = ""
 
 
 def _load_state():
     """Load sync state from disk."""
-    global _sync_state
-    try:
-        if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, 'r') as f:
-                _sync_state = json.load(f)
-    except Exception:
+    global _sync_state, _state_was_unreadable
+    # NO STATE FILE and UNREADABLE STATE FILE are different facts with the same
+    # consequence, and only one of them is normal.
+    #
+    # Both used to land on {} silently. An unreadable state file then reads as
+    # "nothing has ever been synced", so the next pass re-uploads every file in
+    # every workspace -- 97,815 of them on gubei12 as of 2026-09-21 -- and the
+    # logs look exactly like a legitimate first run.
+    #
+    # The empty dict still has to stand, because there is nothing else to
+    # proceed with. What changes is that the caller and the log can tell which
+    # case they are in.
+    if not os.path.exists(STATE_FILE):
         _sync_state = {}
+        return
+    try:
+        with open(STATE_FILE, 'r') as f:
+            _sync_state = json.load(f)
+        _state_was_unreadable = ""
+    except Exception as e:
+        _sync_state = {}
+        _state_was_unreadable = "%s: %s" % (STATE_FILE, repr(e)[:120])
+        print("[workspace-sync] ⚠ STATE FILE UNREADABLE — %s. Treating this as a "
+              "FIRST SYNC, which will re-upload every tracked file. This is NOT "
+              "the same as having no state, and the file was not deleted."
+              % _state_was_unreadable)
 
 
 def _save_state():
@@ -78,6 +109,58 @@ async def _upload_file(client: httpx.AsyncClient, worker_url: str, api_key: str,
         with open(filepath, 'r', errors='replace') as f:
             content = f.read()
 
+        # DO NOT UPLOAD A SAVED REFUSAL INTO THE SHARED STORE.
+        #
+        # This is where the operator's 2026-09-21 defect actually enters the
+        # federation. Something in a workspace fetched a URL with no credential,
+        # got a 401 JSON body, and wrote it to `recent_reports.md`. This
+        # function then walks the session directory, finds a changed file, and
+        # uploads its bytes as the artifact. The institute stores it; a later
+        # task stages it back with status ok and 236 bytes; the hand reads an
+        # auth error where a report should be.
+        #
+        # The node cannot stop a hand writing a bad file into its own workspace.
+        # It CAN decline to publish one, and this is the last point where the
+        # bytes are still local.
+        #
+        # Refusing is the smaller harm here: an unshared file is still on disk
+        # in the workspace, while a shared one becomes somebody else's input and
+        # carries a byte count that makes it look like a document.
+        #
+        # AND THE REFUSAL IS PRINTED WHERE THE SUCCESSES ARE PRINTED. A silent
+        # skip is an absence nobody can inspect, which is the defect one layer
+        # up from the one being fixed.
+        # A BODY THAT CONTRADICTS WHAT ITS NAME PROMISED.
+        #
+        # rho found 6 of 84 `.pdf` locators holding something else, and FIVE of
+        # the six declared nothing wrong at all -- a bot challenge, an app
+        # shell, two gzip WAF pages. No absence to detect and no false claim to
+        # catch: they are simply not the document. The only signal is the
+        # mismatch with the REQUEST, which no guard reading the body can see.
+        #
+        # Measured here after their question: 70 files across the two nodes are
+        # named .csv/.json/.txt and hold HTML. The sharpest pair is CPI.csv at
+        # 28,898 bytes on one node and THA.csv at 28,897 on the other -- the
+        # same upstream error page, fetched for two DIFFERENT series. A size
+        # rule passes 28 KB comfortably and the refusal detector cannot see it,
+        # because an error PAGE is not an error ENVELOPE.
+        #
+        # THIS MARKS AND DOES NOT REFUSE, which is the opposite of the refusal
+        # guard above, and the asymmetry is ai-institute's: a saved refusal is
+        # never the document, but a scraped HTML page saved as .txt may be
+        # exactly what the task wanted. 99,554 bytes of a Sina Finance filing
+        # sits in this population and is not a defect. Blocking it would
+        # destroy research to catch a naming mismatch.
+        mismatch = locator_contradiction(rel_path, content, byte_size=file_size)
+        if mismatch:
+            print(f"[workspace-sync] ⚠ {session_id}/{rel_path}: {mismatch}")
+
+        refusal = refusal_envelope(content)
+        if refusal:
+            print(f"[workspace-sync] REFUSED {session_id}/{rel_path}: {refusal}")
+            _leave_refusal_marker(filepath, rel_path, refusal)
+            return False
+
         resp = await client.post(
             f"{worker_url}/api/sessions/{session_id}/workspace/upload",
             json={"path": rel_path, "content": content, "contentType": _get_content_type(filepath)},
@@ -91,6 +174,148 @@ async def _upload_file(client: httpx.AsyncClient, worker_url: str, api_key: str,
     except Exception as e:
         print(f"[workspace-sync] Upload failed {session_id}/{rel_path}: {e}")
         return False
+
+
+# Extensions that promise a machine-readable shape. A mismatch here is worth
+# saying out loud; a mismatch on .md or .html is not, because prose and markup
+# legitimately contain anything.
+_PROMISES_DATA = (".csv", ".json", ".tsv", ".xml", ".yaml", ".yml")
+
+
+def locator_contradiction(rel_path: str, content: str, byte_size: int = -1) -> str:
+    """One line if the body contradicts what the filename promised, else "".
+
+    Deliberately narrow: only HTML found where a DATA extension was named. That
+    is the case with no benign reading -- nothing legitimately writes a web page
+    into a .csv -- and it is where the measured population sits.
+    """
+    # MEASURE THE BYTES WHEN THE CALLER HAS THEM; SAY CHARS WHEN IT DOES NOT.
+    #
+    # Renaming the unit was the weaker half of the fix. rho's prescription for
+    # this class is the stronger one: a mis-named UNIT is caught by re-deriving
+    # from a stored quantity, but a mis-MEASURED quantity can only be caught by
+    # re-measuring from the SOURCE ARTIFACT -- and they showed no tolerance
+    # separates my 0.13% error from ordinary rounding at 3.45%, so no check over
+    # text can ever find it.
+    #
+    # _upload_file holds the PATH, so it can stat the file and pass the real
+    # byte count. When it does, this says bytes and means bytes. When a caller
+    # has only a decoded string the count is characters and the message says so,
+    # because the byte count is unrecoverable from a str.
+    #
+    # SIZES HERE ARE CHARACTERS UNLESS byte_size IS GIVEN, AND THE MESSAGE SAYS WHICH.
+    #
+    # `content` is already decoded, so len() counts CHARACTERS. Measured
+    # 2026-09-22: I published CPI.csv at "28,898 bytes" when the file is 28,936
+    # bytes -- 38 short, because the page carries multi-byte UTF-8. Worse, I
+    # made "the two files are within ONE BYTE of each other" the centrepiece of
+    # a finding, and both figures were wrong by the same 38, so the difference
+    # survived by accident and described my decoder rather than the pages.
+    #
+    # Same class as a MiB value labelled MB: a magnitude reported in a unit it
+    # was not measured in. The caller has the decoded string and cannot recover
+    # the byte count from it, so the honest fix is to NAME the unit correctly
+    # rather than to guess at bytes.
+    # THE DETECTION WAS A VOCABULARY, AND REAL PAGES DO NOT CARRY IT.
+    #
+    # It asked for `<!doctype html`, `<html` or `<head>`. Measured 2026-09-22
+    # against the operator's own failing task on sg01: `aapl.csv` and
+    # `market.csv` each hold 271 bytes of a Stooq error page that begins
+    # `<meta charset=utf-8><title>Stooq</title><center ...` -- no doctype, no
+    # html element, no head. The guard flagged 1 of 3 real contradictions in
+    # that directory and missed two, because three literals are a vocabulary
+    # sitting in the path that decides what the structural part is applied to.
+    #
+    # The structural question is not "does this look like HTML" -- that needs a
+    # list of tags and will always be incomplete -- it is "does this fail to be
+    # the type its own name promises", which is a PARSE.
+    #
+    #   .json            must parse as JSON
+    #   .csv .tsv        a data row never begins with `<`
+    #   .yaml .yml       neither does a YAML document
+    #   .xml             legitimately begins with `<`, so the cheap test is
+    #                    unavailable and the tag vocabulary stays there, DECLARED
+    #                    incomplete rather than presented as structural
+    #
+    # DIRECTION: this MARKS and never refuses, so its failures cost a reader one
+    # look. A truncated but genuine .json now marks too -- that file is unusable
+    # as JSON either way, so it is a true positive of a neighbouring kind rather
+    # than a false one.
+    ext = os.path.splitext(rel_path)[1].lower()
+    if ext not in _PROMISES_DATA:
+        return ""
+    body = content.lstrip()
+    if not body:
+        return ""
+    import re as _re
+    if ext == ".json":
+        try:
+            json.loads(content)
+            return ""
+        except Exception:
+            reason = "does not parse as JSON"
+    elif ext == ".xml":
+        head = body[:300].lower()
+        if not (head.startswith("<!doctype html") or head.startswith("<html")
+                or "<head>" in head):
+            return ""
+        reason = "carries HTML page markers"
+    else:
+        if not body.startswith("<"):
+            return ""
+        reason = "begins with markup, not data"
+    m = _re.search(r"<title[^>]*>(.*?)</title>", content[:4000], _re.I | _re.S)
+    title = m.group(1).strip()[:80] if m else ""
+    kind = "an HTML PAGE" if (title or body[:300].lower().lstrip().startswith("<"))\
+        else "NOT THE DECLARED TYPE"
+    size = ("%d bytes" % byte_size) if byte_size >= 0 else ("%d chars" % len(content))
+    return ("named %s but the bytes are %s -- it %s (%s%s). The fetch returned "
+            "a page where data was expected: do not parse this as %s, and treat "
+            "the data as MISSING."
+            % (rel_path, kind, reason, size,
+               ", titled %r" % title if title else ", no title at all",
+               ext.lstrip(".")))
+
+
+def _leave_refusal_marker(filepath: str, rel_path: str, refusal: str) -> None:
+    """Tell the HAND why its file did not publish, where the hand will find it.
+
+    ai-institute asked the right question about the first version of this guard:
+    does anything tell the hand why its file did not publish, or does the file
+    simply not appear? It simply did not appear. The refusal went to the node's
+    stdout, which the model that wrote the file never reads.
+
+    That is the same defect the guard exists to fix, one layer up -- a thing
+    that is missing, with nothing at the place you would look to say why. A
+    node that declines to publish and says so only to itself has moved the
+    uninspectable absence rather than removed it.
+
+    So the marker is a SIBLING FILE in the workspace: the hand looks for its
+    output where it wrote it, and finds the reason sitting next to it. It is
+    plain prose, so it publishes normally on the next pass -- which means the
+    session's stored record also carries the explanation, rather than a gap.
+
+    Never raises: a marker that breaks the sync would be a worse bug than the
+    one it reports.
+    """
+    try:
+        with open(filepath + ".NOT_PUBLISHED.md", "w", encoding="utf-8") as fh:
+            fh.write(
+                "# %s was NOT published to the session store\n\n"
+                "This node declined to upload it. The file is still on disk here,\n"
+                "unchanged -- nothing was deleted.\n\n"
+                "## Why\n\n%s\n\n"
+                "## What this means for you\n\n"
+                "The bytes in that file are a service refusal, not the document the\n"
+                "filename promises. Whatever produced it made a request that was\n"
+                "denied, and saved the denial instead of the result.\n\n"
+                "Do NOT summarise, quote, or reason from its contents as though they\n"
+                "were the document. Report the document as MISSING, and say that a\n"
+                "refusal was saved in its place -- that sentence is the useful output\n"
+                "here, and it is more useful than anything the file appears to contain.\n"
+                % (rel_path, refusal))
+    except Exception as e:                       # pragma: no cover - never fatal
+        print(f"[workspace-sync] could not leave a refusal marker for {rel_path}: {e}")
 
 
 def _collect_changed_files(session_dir: str, session_id: str) -> list[tuple[str, str, float]]:
