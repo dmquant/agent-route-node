@@ -153,6 +153,18 @@ async def register_with_worker(available_hands: list[dict]):
         print(f"[edge-register] Registration error: {e}")
 
 
+def _heartbeat_body(active_tasks: int) -> dict:
+    """The heartbeat's load report, WITH the capacity it is measured against.
+
+    agent-route b98aa521 calls a node "full" when current_load >= max_concurrent, and a full node
+    is alive with its puller paused. Registration hard-codes max_concurrent=3, so without this a
+    node configured otherwise was judged against the wrong number (agent-route 4f0dfb7a).
+    The value is the puller's own MAX_CONCURRENT, the one _pull_and_execute() gates on.
+    """
+    from app.task_puller import MAX_CONCURRENT
+    return {"activeTasks": active_tasks, "maxConcurrent": MAX_CONCURRENT}
+
+
 async def _heartbeat_loop():
     """Send heartbeat every 30s with load stats."""
     cfg = _get_config()
@@ -199,7 +211,7 @@ async def _heartbeat_loop():
             async with httpx.AsyncClient(timeout=5) as client:
                 resp = await client.post(
                     f"{worker_url}/api/nodes/{node_id}/heartbeat",
-                    json={"activeTasks": active_tasks},
+                    json=_heartbeat_body(active_tasks),
                     headers={
                         "Content-Type": "application/json",
                         "X-API-Key": auth_key,
