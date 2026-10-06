@@ -124,9 +124,19 @@ async def _execute_one(task: dict, worker_url: str, auth_key: str) -> None:
         output = ""
         try:
             async with httpx.AsyncClient(timeout=30) as client:
+                # A fenced hand answers only to its advertised name (app/hand_names.py).
+                from app.hand_names import local_hand_for
+                local_name = local_hand_for(hand_name)
+                if local_name is None:
+                    output = (f"[FENCED hand={hand_name}] this node runs that hand only under "
+                              f"its advertised name; the task was not run")
+                    _logger.warning(f"FENCED {task_id[:12]} | {output}")
+                    await _post_result(client, worker_url, auth_key, task_id, 64, output)
+                    return
+
                 # Resolve the actual hand to run, applying cooldown +
                 # fallback chain. `tried` records every hand we examined.
-                hand, tried = hand_registry.resolve(hand_name, allow_fallback=allow_fallback)
+                hand, tried = hand_registry.resolve(local_name, allow_fallback=allow_fallback)
                 if not hand:
                     # Either nothing registered under that name OR everything
                     # in the fallback chain is on cooldown. Surface a
@@ -142,7 +152,7 @@ async def _execute_one(task: dict, worker_url: str, auth_key: str) -> None:
                     await _post_result(client, worker_url, auth_key, task_id, 429, output)
                     return
 
-                if hand.name != hand_name:
+                if hand.name != local_name:
                     print(f"[task-puller] {hand_name} unavailable, executing on {hand.name} instead")
 
                 workspace_dir = os.path.join(get_workspaces_dir(), session_id or task_id)

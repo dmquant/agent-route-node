@@ -214,11 +214,12 @@ async def startup_event():
     # Start periodic GC for completed tasks
     await task_manager.start_gc_loop(interval_seconds=60, max_age_ms=300000)
     # Register only enabled hands (respect .env gates)
+    from app.hand_names import advertised_name
     available = []
     for name in hand_registry.list_names():
         gate = _ENV_GATES.get(name)
         if not gate or os.getenv(gate) == "true":
-            available.append({"name": name})
+            available.append({"name": advertised_name(name)})
     await register_with_worker(available)
     start_heartbeat()
     start_workspace_sync()
