@@ -886,7 +886,7 @@ class WorkflowExecutor:
 
             # ─── Check for Rate Limit (per-CLI parser) ─────
             from app.hands.rate_limit import parse_rate_limit
-            rl = parse_rate_limit(hand.name, agent_output)
+            rl = parse_rate_limit(hand.name, agent_output, result.exit_code)
             is_rate_limited = False
             wait_time = rl.retry_after_s if rl else None
 

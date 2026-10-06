@@ -200,7 +200,7 @@ async def _execute_one(task: dict, worker_url: str, auth_key: str) -> None:
                 # cooldown so future tasks bypass this hand. We do this even
                 # for hands we fell back TO, not just the originally
                 # requested one.
-                rl = parse_rate_limit(hand.name, output)
+                rl = parse_rate_limit(hand.name, output, exit_code)
                 if rl is not None:
                     hand_registry.mark_rate_limited_from(rl)
                     # Mark the result text with a structured prefix so the

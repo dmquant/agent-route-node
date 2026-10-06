@@ -381,7 +381,18 @@ _PARSERS = {
 }
 
 
-def parse_rate_limit(hand_name: str, output: str) -> Optional[RateLimitInfo]:
+# Hands whose CLI exits non-zero when it is really rate-limited, so an exit-0
+# run is a completed answer and is never read as a limit. agent-route d66f6411:
+# a 133,220-char codex report (task 489cd9d0, gubei12 10-06) ended with
+# "Yahoo press-release open returned HTTP 429" in its sources note, matched
+# _CODEX_429_RE in the tail, and was rewritten to exit 429 + a 30 min codex
+# cooldown. codex's own capacity errors exit 1. NOT agy: it reports a
+# geo-block with exit 0 and relies on this parser (agy_hand.py).
+_EXITS_NONZERO_ON_LIMIT = {"codex"}
+
+
+def parse_rate_limit(hand_name: str, output: str,
+                     exit_code: Optional[int] = None) -> Optional[RateLimitInfo]:
     """Return RateLimitInfo if `output` looks rate-limited, else None.
 
     Strictly per-hand: only hands listed in `_PARSERS` are checked.
@@ -390,8 +401,13 @@ def parse_rate_limit(hand_name: str, output: str) -> Optional[RateLimitInfo]:
     produces false positives at a rate that's worse than just letting
     the next task discover the rate-limit on its own. Hands that need
     rate-limit handling opt in by registering a dedicated parser.
+
+    Pass the hand's `exit_code` when known: for hands in
+    `_EXITS_NONZERO_ON_LIMIT`, an exit-0 run is never a rate limit.
     """
     if not output:
+        return None
+    if exit_code == 0 and hand_name in _EXITS_NONZERO_ON_LIMIT:
         return None
     parser = _PARSERS.get(hand_name)
     return parser(output) if parser else None

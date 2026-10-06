@@ -1454,7 +1454,7 @@ async def execute_task(req: ExecutionRequest, request: Request):
     # (the hand we actually ran on, after fallback) — not req.client — so
     # cooldowns are recorded against the right hand.
     from app.hands.rate_limit import parse_rate_limit
-    rl = parse_rate_limit(hand.name, result.output)
+    rl = parse_rate_limit(hand.name, result.output, result.exit_code)
     if rl is not None:
         hand_registry.mark_rate_limited_from(rl)
         result.exit_code = 429
@@ -1526,7 +1526,7 @@ async def execute_task_stream(req: ExecutionRequest, request: Request):
             # Check for rate limit using the per-CLI parser
             from app.hands.rate_limit import parse_rate_limit
             output_text = "".join(full_output)
-            rl = parse_rate_limit(hand.name, output_text)
+            rl = parse_rate_limit(hand.name, output_text, result.exit_code)
             if rl is not None:
                 hand_registry.mark_rate_limited_from(rl)
                 result.exit_code = 429
