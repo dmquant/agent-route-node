@@ -280,6 +280,20 @@ def main() -> int:
 
     markers = tuple(_ASSERT_EVIDENCE_DEFAULT) + tuple(a.assert_marker)
     print("assertion markers in use: %s" % ", ".join(repr(m) for m in markers))
+    # Provenance: copytree copies the WORKING TREE, so on a dirty tree the counts below
+    # describe code no commit holds. Say which, rather than let a kill count imply a commit.
+    def _git(*args):
+        r = subprocess.run(["git", "-C", a.repo, *args], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+    head = _git("rev-parse", "HEAD")
+    dirty = _git("status", "--porcelain", "--", a.module, *a.tests)
+    if head is None:
+        print("provenance: NOT A GIT CHECKOUT — results describe an unversioned tree")
+    elif dirty:
+        print("provenance: HEAD %s, WORKING TREE DIRTY for the measured files — results "
+              "describe uncommitted code:\n%s" % (head, dirty))
+    else:
+        print("provenance: HEAD %s, measured files clean — results describe this commit" % head)
     scratch = tempfile.mkdtemp(prefix="mutate-")
     dst = os.path.join(scratch, "tree")
     shutil.copytree(a.repo, dst, ignore=shutil.ignore_patterns(
@@ -309,8 +323,12 @@ def main() -> int:
         null_len = len(ast.unparse(ast.parse(original)).encode())
         broken = "raise RuntimeError('same-size control')\n"
         pad = null_len - len(broken.encode())
+        prev = os.stat(target)
         with open(target, "w", encoding="utf-8") as fh:
             fh.write(broken + ("#" * pad if pad > 0 else ""))
+        # Force the mtime half of the stale-.pyc condition too, so the control does not
+        # depend on landing in the same wall-clock second as the previous write.
+        os.utime(target, ns=(prev.st_atime_ns, prev.st_mtime_ns))
         ok, _ = run_tests(dst, a.tests, markers=markers)
         with open(target, "w", encoding="utf-8") as fh:
             fh.write(original)
