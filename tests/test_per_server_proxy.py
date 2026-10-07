@@ -55,8 +55,8 @@ for k in list(os.environ):
         del os.environ[k]
 URL_A, URL_B = serve("a"), serve("b")
 os.environ.update({
-    "AI_INSTITUTE_MCP_URL": URL_A, "AI_INSTITUTE_MCP_KEY": "nk_i",
-    "ROS_GATEWAY_MCP_URL": URL_B, "ROS_GATEWAY_MCP_KEY": "nk_g",
+    "AI_INSTITUTE_MCP_URL": URL_A, "AI_INSTITUTE_MCP_KEY": "mcpk_i",
+    "ROS_GATEWAY_MCP_URL": URL_B, "ROS_GATEWAY_MCP_KEY": "rosnode_g",
 })
 
 import importlib.util

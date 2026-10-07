@@ -22,9 +22,9 @@ for k in list(os.environ):
     if k.startswith(("AI_INSTITUTE_", "ROS_GATEWAY_")):
         del os.environ[k]
 os.environ["AI_INSTITUTE_MCP_URL"] = "https://institute.example/api/mcp"
-os.environ["AI_INSTITUTE_MCP_KEY"] = "nk_institute"
+os.environ["AI_INSTITUTE_MCP_KEY"] = "mcpk_institute"
 os.environ["ROS_GATEWAY_MCP_URL"] = "https://gateway.example/mcp"
-os.environ["ROS_GATEWAY_MCP_KEY"] = "nk_gateway"
+os.environ["ROS_GATEWAY_MCP_KEY"] = "rosnode_gateway"
 os.environ["NODE_TOKEN"] = "nk_node"
 
 from app import mcp_config
@@ -49,8 +49,8 @@ check("says which it declined", "declined ai-institute" in p.note, p.note)
 check("gateway key under its own var",
       'bearer_token_env_var="ROS_GATEWAY_MCP_KEY"' in argv)
 check("institute key NOT in env", "AI_INSTITUTE_MCP_KEY" not in p.env, str(sorted(p.env)))
-check("gateway key IS in env", p.env.get("ROS_GATEWAY_MCP_KEY") == "nk_gateway")
-check("no credential VALUE in argv", "nk_gateway" not in argv and "nk_node" not in argv)
+check("gateway key IS in env", p.env.get("ROS_GATEWAY_MCP_KEY") == "rosnode_gateway")
+check("no credential VALUE in argv", "rosnode_gateway" not in argv and "nk_node" not in argv)
 
 print("opencode — both servers, distinct env references")
 ws = tempfile.mkdtemp()
@@ -63,9 +63,9 @@ check("institute header X-Admin-Token",
 check("gateway header Bearer",
       doc["mcp"]["ros-gateway"]["headers"] == {"Authorization": "Bearer {env:ROS_GATEWAY_MCP_KEY}"})
 blob = json.dumps(doc)
-check("no credential VALUE on disk", "nk_institute" not in blob and "nk_gateway" not in blob)
-check("both keys in spawn env", p.env == {"AI_INSTITUTE_MCP_KEY": "nk_institute",
-                                          "ROS_GATEWAY_MCP_KEY": "nk_gateway"}, str(p.env))
+check("no credential VALUE on disk", "mcpk_institute" not in blob and "rosnode_gateway" not in blob)
+check("both keys in spawn env", p.env == {"AI_INSTITUTE_MCP_KEY": "mcpk_institute",
+                                          "ROS_GATEWAY_MCP_KEY": "rosnode_gateway"}, str(p.env))
 
 print("claude — one --mcp-config carrying both")
 ws = tempfile.mkdtemp()
@@ -128,7 +128,7 @@ line = _said(lambda: mcp_config.prepare("claude", tempfile.mkdtemp()))
 check("feature off says NOT CONFIGURED and why", "NOT CONFIGURED" in line and "feature is off" in line, line[:70])
 
 os.environ["ROS_GATEWAY_MCP_URL"] = "https://gateway.example/mcp"
-os.environ["ROS_GATEWAY_MCP_KEY"] = "nk_gateway"
+os.environ["ROS_GATEWAY_MCP_KEY"] = "rosnode_gateway"
 importlib.reload(mcp_config)
 mcp_config._logger.addHandler(_h)
 mcp_config._logger.setLevel(_logging.INFO)

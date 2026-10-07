@@ -19,7 +19,7 @@ unconfigured node.
 
 Environment:
     AI_INSTITUTE_MCP_URL     base URL of the MCP server. Empty/unset = feature off.
-    AI_INSTITUTE_MCP_KEY     credential. Defaults to NODE_TOKEN.
+    AI_INSTITUTE_MCP_KEY     credential. No default; a node token (nk_/dcpn_) is refused.
     AI_INSTITUTE_MCP_HEADER  header carrying it. Default "Authorization".
     AI_INSTITUTE_MCP_SCHEME  value prefix. Default "Bearer " for Authorization,
                              empty for anything else.
@@ -135,7 +135,15 @@ def settings() -> Optional[dict]:
     url = (os.getenv("AI_INSTITUTE_MCP_URL") or "").strip()
     if not url:
         return None
-    key = (os.getenv(_KEY_VAR) or os.getenv("NODE_TOKEN") or "").strip()
+    # No NODE_TOKEN fallback (IKG-274, 2026-10-07): the node's transport token is not an MCP credential,
+    # the institute refuses it since IKG-272 and the gateway needs a rosnode_ token, so falling back to it
+    # only put the node's identity into every hand's environment.
+    key = (os.getenv(_KEY_VAR) or "").strip()
+    from app.hands.base import is_node_credential
+    if is_node_credential(key):
+        _logger.warning("institute MCP key is a node transport credential (nk_/dcpn_) — refused; "
+                        "use a per-dispatch or MCP-class credential")
+        return None
     if not key:
         # A URL with no credential would produce 401s inside the model's tool
         # loop, which is the expensive failure mode: the model cannot tell an
@@ -193,7 +201,15 @@ def gateway_settings() -> Optional[dict]:
     url = (os.getenv("ROS_GATEWAY_MCP_URL") or "").strip()
     if not url:
         return None
-    key = (os.getenv(_GATEWAY_KEY_VAR) or os.getenv("NODE_TOKEN") or "").strip()
+    # No NODE_TOKEN fallback (IKG-274, 2026-10-07): the node's transport token is not an MCP credential,
+    # the institute refuses it since IKG-272 and the gateway needs a rosnode_ token, so falling back to it
+    # only put the node's identity into every hand's environment.
+    key = (os.getenv(_GATEWAY_KEY_VAR) or "").strip()
+    from app.hands.base import is_node_credential
+    if is_node_credential(key):
+        _logger.warning("gateway MCP key is a node transport credential (nk_/dcpn_) — refused; "
+                        "use a per-dispatch or MCP-class credential")
+        return None
     if not key:
         _logger.warning("ROS_GATEWAY_MCP_URL is set but no credential is available "
                         "— the gateway server is not configured")

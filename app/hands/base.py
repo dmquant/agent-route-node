@@ -160,6 +160,12 @@ def kill_process_tree(process, sig=signal.SIGKILL) -> str:
 
 # The node's identity with agent-route and its admin fallback: never a hand's.
 NODE_ONLY_CREDENTIALS = ("NODE_KEY", "NODE_TOKEN", "ADMIN_API_KEY")
+_NODE_CREDENTIAL_PREFIXES = ("nk_", "dcpn_")
+
+
+def is_node_credential(value) -> bool:
+    """An agent-route node token (nk_) or node key (dcpn_): never a hand's to hold."""
+    return isinstance(value, str) and value.strip().startswith(_NODE_CREDENTIAL_PREFIXES)
 
 
 def get_cli_env(cwd: str = "") -> dict:
@@ -216,7 +222,13 @@ def get_cli_env(cwd: str = "") -> dict:
     # prompt with `env`. No hand reads them (MCP keys are injected under their
     # own names, even when their value falls back to NODE_TOKEN). The MCP keys
     # themselves stay: `${VAR}` headers resolve from the hand's environment.
+    node_values = {v for k in NODE_ONLY_CREDENTIALS if (v := (env.get(k) or os.getenv(k) or "").strip())}
     for k in NODE_ONLY_CREDENTIALS:
+        env.pop(k, None)
+    # ...and not under ANOTHER name either. ai-institute IKG-274 (2026-10-07): the node's nk_ token
+    # also sat in AI_INSTITUTE_MCP_KEY / ROS_GATEWAY_MCP_KEY, so a codex hand ran `env` and printed it.
+    # A value that is a node credential, or is shaped like one, is dropped whatever it is called.
+    for k in [k for k, v in env.items() if v and (v.strip() in node_values or is_node_credential(v))]:
         env.pop(k, None)
 
     # A subprocess spawned with cwd= must be told about it. Without this the

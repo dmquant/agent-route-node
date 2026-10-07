@@ -25,9 +25,9 @@ for k in list(os.environ):
     if k.startswith(("AI_INSTITUTE_", "ROS_GATEWAY_")):
         del os.environ[k]
 os.environ["ROS_GATEWAY_MCP_URL"] = "https://gateway.example/mcp"
-os.environ["ROS_GATEWAY_MCP_KEY"] = "nk_gateway"
+os.environ["ROS_GATEWAY_MCP_KEY"] = "rosnode_gateway"
 os.environ["AI_INSTITUTE_MCP_URL"] = "https://institute.example/api/mcp"
-os.environ["AI_INSTITUTE_MCP_KEY"] = "nk_institute"
+os.environ["AI_INSTITUTE_MCP_KEY"] = "mcpk_institute"
 os.environ["NODE_TOKEN"] = "nk_node"
 
 from app import mcp_config
