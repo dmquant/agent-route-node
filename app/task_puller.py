@@ -368,6 +368,12 @@ def _model_metrics(hand_name, requested_model, hand_metrics=None):
 
 async def _post_result(client, worker_url, auth_key, task_id, exit_code, result_text, metrics=None):
     """Post task result back to CF Worker callback endpoint."""
+    from app.result_bound import MAX_RESULT_BYTES, bound_result, encoded_size, keep_full_output
+
+    if encoded_size(result_text) > MAX_RESULT_BYTES:
+        kept_at = keep_full_output(task_id, result_text)
+        result_text, _ = bound_result(result_text, kept_at=kept_at)
+        _logger.warning(f"TRUNCATED {task_id[:12]} | result over {MAX_RESULT_BYTES} bytes; full output at {kept_at}")
     body = {"exitCode": exit_code, "resultText": result_text}
     if metrics is not None:
         body["metrics"] = metrics
