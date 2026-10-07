@@ -535,6 +535,48 @@ def _prepare_codex(servers: list, workspace_dir: str) -> McpPlan:
 _AGY_CONFIG = "~/.gemini/config/mcp_config.json"
 
 
+def _scrub_agy_node_credentials() -> list:
+    """Blank and disable any agy registry entry whose header holds a node credential.
+
+    ai-institute IKG-278 fafc3d2d-2945-41e0-af8e-6b05729846f6 (2026-10-07): d2ee067 stopped
+    WRITING a node token into this file, but prepare() returns before touching it when no server
+    is configured, so the literal written on 09-23 stayed. agy (a Go client) kept presenting it
+    to the institute's /api/mcp every task, 20 minutes after the token was revoked. A file that
+    outlives the task has to be cleaned by the code that stopped writing it, not left to age out.
+
+    Runs on every agy task, configured or not. Returns the names it disabled; never raises.
+    """
+    from app.hands.base import is_node_credential
+    try:
+        path = os.path.expanduser(_AGY_CONFIG)
+        doc = _load_json_or_empty(path)
+        if not doc:
+            return []
+        hit = []
+        for name, entry in (doc.get("mcpServers") or {}).items():
+            headers = entry.get("headers") if isinstance(entry, dict) else None
+            if not isinstance(headers, dict):
+                continue
+            bad = [k for k, v in headers.items()
+                   if isinstance(v, str) and is_node_credential(v.split()[-1] if v.split() else v)]
+            if bad:
+                for k in bad:
+                    headers[k] = ""
+                entry["disabled"] = True
+                hit.append(name)
+        if hit:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(doc, fh, indent=2)
+            os.chmod(path, 0o600)
+            _logger.warning("MCP agy: removed a node credential from %s entr%s %s in %s and disabled "
+                            "them — a node token is not an MCP credential", len(hit),
+                            "y" if len(hit) == 1 else "ies", hit, _AGY_CONFIG)
+        return hit
+    except Exception as e:
+        _logger.warning("MCP agy: node-credential scrub of %s failed: %s", _AGY_CONFIG, e)
+        return []
+
+
 def _prepare_agy(servers: list, workspace_dir: str) -> McpPlan:
     """agy keeps MCP servers in one global registry at ~/.gemini/config/mcp_config.json
     — it is a gemini-CLI descendant, which is what it replaced.
@@ -932,6 +974,8 @@ def prepare(hand: str, workspace_dir: str) -> McpPlan:
     # broken in the one place that would have answered the question in one grep.
     #
     # One line per hand per task. That is the price of being able to answer.
+    if hand == "agy":
+        _scrub_agy_node_credentials()
     servers = servers_for(hand)
     if not servers:
         if not settings() and not gateway_settings():
