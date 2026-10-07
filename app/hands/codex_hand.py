@@ -14,6 +14,7 @@ from typing import Optional, Callable, Any
 from app.mcp_config import prepare as mcp_prepare
 from app.hands.base import Hand, HandResult, filter_noise, _NOISE_PATTERNS, resolve_cli_path, get_cli_env, utf8_stream_decoder
 from app.hands.stream_processor import CodexStreamProcessor
+from app.hands.diff_elide import elide_diffs
 
 
 class CodexHand(Hand):
@@ -136,7 +137,7 @@ class CodexHand(Hand):
             for sc in processor.finalize():
                 await on_log(json.dumps(sc.to_event()))
 
-        output_text = "\n".join(full_output).strip()
+        output_text = elide_diffs("\n".join(full_output)).strip()
 
         return HandResult(output=output_text or f"Exit code {exit_code}", exit_code=exit_code)
 
