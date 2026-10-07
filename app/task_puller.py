@@ -17,6 +17,7 @@ Logs all activity to ~/.agent-route/task_puller.log
 from __future__ import annotations  # PEP 604 union syntax for Python 3.9 venvs
 
 import os
+import random
 import asyncio
 import logging
 from datetime import datetime
@@ -29,6 +30,23 @@ _puller_task = None
 # Tunables. POLL_INTERVAL is short because the loop is now non-blocking; the
 # old 60s value was a workaround for the sequential bottleneck.
 POLL_INTERVAL = 15  # seconds
+# agent-route e9148721-13c4-4217-aeee-8cab46b9441b (2026-10-07): under D1 overload tasks/pending
+# answers 503 (deliberately, to shed load) or times out. Every node then re-polled on the same
+# fixed 15 s beat, so the fleet came back in step. The next poll after an overload is drawn from
+# 5-20 s instead, once, then the beat resumes.
+OVERLOAD_RETRY_S = (5.0, 20.0)
+_next_delay: float | None = None
+
+
+def _mark_overloaded() -> None:
+    global _next_delay
+    _next_delay = random.uniform(*OVERLOAD_RETRY_S)
+
+
+def _take_next_delay() -> float:
+    global _next_delay
+    d, _next_delay = (_next_delay if _next_delay is not None else POLL_INTERVAL), None
+    return d
 MAX_CONCURRENT = int(os.getenv("NODE_MAX_CONCURRENT", "3"))
 
 # Concurrency primitives. Created lazily on first poll so import order is safe.
@@ -266,6 +284,8 @@ async def _pull_and_execute() -> None:
             )
             if resp.status_code != 200:
                 _logger.warning(f"Pull failed: HTTP {resp.status_code} — {resp.text[:200]}")
+                if resp.status_code == 503:
+                    _mark_overloaded()
                 return
 
             tasks = resp.json().get("tasks", [])
@@ -285,6 +305,8 @@ async def _pull_and_execute() -> None:
                 asyncio.create_task(_execute_one(task, worker_url, auth_key))
 
     except Exception as e:
+        if isinstance(e, httpx.TimeoutException):
+            _mark_overloaded()
         if "ConnectError" not in str(type(e)):
             _logger.error(f"Poll error: {_describe_error(e)}")
             print(f"[task-puller] Error: {_describe_error(e)}")
@@ -418,7 +440,7 @@ async def _poll_loop():
             if consecutive_errors > 5:
                 await asyncio.sleep(30)
         try:
-            await asyncio.sleep(POLL_INTERVAL)
+            await asyncio.sleep(_take_next_delay())
         except asyncio.CancelledError:
             _logger.info("Poll loop cancelled during sleep")
             return
