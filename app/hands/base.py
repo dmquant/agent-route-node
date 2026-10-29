@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Optional, AsyncGenerator, Callable, Any, List
 import codecs
 import os
+import secrets
 import signal
 import shutil
 import re
@@ -60,7 +61,7 @@ def resolve_cli_path(binary: str) -> str:
 
     # 2. Check common bin dirs
     search_dirs = [
-        "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin",
+        "/opt/ros-runtime/npm/bin", "/opt/ros-runtime/node/bin", "/opt/ros-runtime/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin",
         os.path.expanduser("~/.local/bin"),
         os.path.expanduser("~/.npm-global/bin"),
         # Modern single-binary CLIs install under ~/.<tool>/bin and put it on PATH from the shell
@@ -142,7 +143,16 @@ def kill_process_tree(process, sig=signal.SIGKILL) -> str:
     Falls back to killing the direct child when there is no group to kill --
     which is the old behaviour, and is still better than raising inside a
     timeout handler.
+
+    A hand started through the launcher (spawn_hand in split mode) runs as
+    another user: the node can signal neither it nor its children, and sudo
+    does not relay SIGKILL. Such a process carries its run id, and the kill
+    goes back through the launcher, which killpg()s the hand's group as the
+    hand user.
     """
+    run_id = getattr(process, "agentroute_run_id", None)
+    if run_id:
+        return _kill_via_launcher(process, run_id, sig)
     pid = getattr(process, "pid", None)
     if pid is None:
         return "no pid"
@@ -158,6 +168,48 @@ def kill_process_tree(process, sig=signal.SIGKILL) -> str:
             return "could not kill pid %d: %s" % (pid, e2)
 
 
+_LAUNCHER_SIGNALS = {signal.SIGKILL: "KILL", signal.SIGTERM: "TERM"}
+
+
+def _launcher_argv():
+    user = os.getenv("AGENT_ROUTE_HAND_USER", "").strip()
+    launcher = os.getenv("AGENT_ROUTE_HAND_LAUNCHER", "").strip() or DEFAULT_HAND_LAUNCHER
+    return [SUDO_BINARY, "-n", "-u", user, launcher]
+
+
+_SUDO_ENV = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
+
+
+def _kill_via_launcher(process, run_id, sig) -> str:
+    import json as _json
+    import subprocess as _sp
+    def failed(msg):
+        # Still reap what we can: sudo is our child, and a wall that leaves the
+        # caller awaiting process.wait() forever is worse than a partial kill.
+        try:
+            process.kill()
+        except Exception:
+            pass
+        return msg + " -- CHILDREN MAY SURVIVE"
+
+    name = _LAUNCHER_SIGNALS.get(sig)
+    if name is None:
+        return failed("signal %r is not one the launcher sends (TERM/KILL)" % sig)
+    if not os.getenv("AGENT_ROUTE_HAND_USER", "").strip():
+        return failed("run %s was started through the launcher but AGENT_ROUTE_HAND_USER "
+                      "is unset" % run_id)
+    line = _json.dumps({"signal": {"run_id": run_id, "sig": name}}) + "\n"
+    try:
+        r = _sp.run(_launcher_argv(), input=line, capture_output=True, text=True,
+                    timeout=15, env=_SUDO_ENV)
+    except Exception as e:
+        return failed("launcher kill for run %s failed: %s" % (run_id, e))
+    if r.returncode != 0:
+        return failed("launcher refused kill for run %s: %s" % (
+            run_id, (r.stderr or "").strip() or "exit %d" % r.returncode))
+    return "via launcher: %s" % (r.stdout or "").strip()
+
+
 # The node's identity with agent-route and its admin fallback: never a hand's.
 NODE_ONLY_CREDENTIALS = ("NODE_KEY", "NODE_TOKEN", "ADMIN_API_KEY")
 _NODE_CREDENTIAL_PREFIXES = ("nk_", "dcpn_")
@@ -166,6 +218,89 @@ _NODE_CREDENTIAL_PREFIXES = ("nk_", "dcpn_")
 def is_node_credential(value) -> bool:
     """An agent-route node token (nk_) or node key (dcpn_): never a hand's to hold."""
     return isinstance(value, str) and value.strip().startswith(_NODE_CREDENTIAL_PREFIXES)
+
+
+# ─── The one place a hand process is started ────────
+# On the Mac nodes the node and its hands ran as the same macOS user, so any
+# hand could read the node's ~/.agent-route/.env (node tokens) no matter what
+# get_cli_env stripped from its environment. The user split runs the node as
+# the hidden user _agentroute and every hand as the operator, through ONE
+# root-owned launcher allowed by a single sudoers line:
+#
+#     _agentroute ALL=(daoming) NOPASSWD: /usr/local/libexec/agentroute-hand
+#
+# AGENT_ROUTE_HAND_USER set   -> `sudo -n -u $USER $LAUNCHER`, one JSON line on
+#                                stdin ({"hand","argv","cwd","env"}), stdin closed.
+#                                The launcher picks the binary from its own
+#                                root-owned allowlist and reopens stdin on
+#                                /dev/null before exec (scripts/agentroute-hand).
+# AGENT_ROUTE_HAND_USER unset -> exactly the old direct spawn, stdin=DEVNULL.
+#
+# Every hand module spawns through spawn_hand; tests/test_hands_spawn_only_
+# through_spawn_hand.py fails, naming the module, if one starts a process itself.
+DEFAULT_HAND_LAUNCHER = "/usr/local/libexec/agentroute-hand"
+SUDO_BINARY = "/usr/bin/sudo"
+
+
+def hand_spawn_spec(hand_name: str, cmd: str, args, cwd, env) -> dict:
+    """The JSON line the launcher reads. argv[0] is advisory; the launcher replaces it."""
+    return {
+        "hand": hand_name,
+        "argv": [cmd, *[str(a) for a in args]],
+        "cwd": cwd or "",
+        "env": dict(env) if env else {},
+    }
+
+
+async def spawn_hand(hand_name: str, cmd: str, args, *, cwd=None, env=None,
+                     stdout=None, stderr=None, **kwargs):
+    """Start a hand subprocess. Returns the asyncio Process.
+
+    `kwargs` (e.g. start_new_session from spawn_kwargs()) pass through to
+    asyncio.create_subprocess_exec in both modes.
+    """
+    import asyncio
+    import json as _json
+
+    hand_user = os.getenv("AGENT_ROUTE_HAND_USER", "").strip()
+    if not hand_user:
+        return await asyncio.create_subprocess_exec(
+            cmd, *args,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=stderr,
+            cwd=cwd,
+            env=env,
+            **kwargs,
+        )
+
+    launcher = os.getenv("AGENT_ROUTE_HAND_LAUNCHER", "").strip() or DEFAULT_HAND_LAUNCHER
+    # The launcher setsid()s the hand and records its pgid under this id; the
+    # wall (kill_process_tree) names the run, never a pgid of its own choosing.
+    run_id = secrets.token_hex(16)
+    spec = hand_spawn_spec(hand_name, cmd, args, cwd, env)
+    spec["run_id"] = run_id
+    line = _json.dumps(spec) + "\n"
+    process = await asyncio.create_subprocess_exec(
+        SUDO_BINARY, "-n", "-u", hand_user, launcher,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=stdout,
+        stderr=stderr,
+        # sudo resets the environment anyway; the node's own env (and its
+        # tokens) is not handed to sudo -- the hand's env travels in the line.
+        env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+        **kwargs,
+    )
+    process.agentroute_run_id = run_id
+    try:
+        process.stdin.write(line.encode("utf-8"))
+        await process.stdin.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        # The launcher refused before reading (bad config); its stderr says why.
+        pass
+    finally:
+        process.stdin.close()
+    return process
 
 
 def get_cli_env(cwd: str = "") -> dict:
@@ -371,6 +506,10 @@ class HandResult:
     # 2026-09-09 both sourced the figure from an operator's paste of this hand's own output string.
     # Carried structurally now. Optional, so hands that do not measure are unaffected.
     metrics: Optional[dict] = None
+    # result_mode="final" (local-fabric 73248d53, ai-institute IKG-314): `output` is the hand's final
+    # message only, and the full transcript it replaced rides here so the node can keep it and
+    # still scan it (rate limits are announced in the transcript, not in the final message).
+    transcript: Optional[str] = None
 
     @property
     def success(self) -> bool:

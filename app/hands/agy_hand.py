@@ -31,7 +31,7 @@ import time
 from typing import Optional, Callable, Any
 
 from app.mcp_config import prepare as mcp_prepare
-from app.hands.base import Hand, HandResult, filter_noise, resolve_cli_path, get_cli_env, utf8_stream_decoder
+from app.hands.base import Hand, HandResult, filter_noise, resolve_cli_path, get_cli_env, utf8_stream_decoder, spawn_hand
 from app.hands.stream_processor import AgyStreamProcessor
 
 
@@ -277,15 +277,15 @@ class AgyHand(Hand):
         started_at = time.time()
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                cmd, *args,
+            process = await spawn_hand(
+                "agy", cmd, args,
+                # stdin=DEVNULL is supplied by spawn_hand (direct) or the launcher (user split).
                 # CRITICAL: redirect stdin to /dev/null. Without this the child
                 # inherits the node process's stdin; agy's print mode does a
                 # blocking read() on stdin at startup and, with an open/empty
                 # stdin, hangs forever — a 0-byte log, ~0 CPU stall (the
                 # "auth timeout" the institute saw). DEVNULL makes that read
                 # return EOF immediately, so agy proceeds non-interactively.
-                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workspace_dir,
@@ -471,8 +471,8 @@ class AgyHand(Hand):
         git_dir = os.path.join(workspace_dir, '.git')
         if not os.path.exists(git_dir):
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    'git', 'init', cwd=workspace_dir,
+                proc = await spawn_hand(
+                    'git', 'git', ['init'], cwd=workspace_dir,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -567,7 +567,12 @@ def _capture_artifacts(
                     continue
                 src = os.path.join(root, fn)
                 try:
-                    if os.path.getmtime(src) < started_at:
+                    st = os.stat(src)
+                    if st.st_size > 50 * 1024 * 1024:
+                        # Immediately unlink runaway multi-50MB scratch files (e.g. 3.3TB grep dumps)
+                        os.unlink(src)
+                        continue
+                    if st.st_mtime < started_at or st.st_size > 10 * 1024 * 1024:
                         continue
                 except OSError:
                     continue

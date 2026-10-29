@@ -387,10 +387,28 @@ def reachability_notice(pre: dict) -> str:
 
 def _mcp_dir() -> str:
     """Per-task CLI config lives beside the node's data, never inside the
-    workspace — the workspace is uploaded to R2 after every task."""
+    workspace — the workspace is uploaded to R2 after every task.
+
+    Under the Mac user split (AGENT_ROUTE_HAND_USER set) the node's data dir is 0700 to the
+    hand user, so a claude hand could not read its own --mcp-config and exited 1 in about a
+    second (sg01, 2026-10-08). The file then goes to a sibling of the workspaces dir, inside
+    the shared root the hand user can read through the agentroute group but still outside any
+    workspace. It holds a URL and a ${VAR} reference, never a credential value.
+    """
+    if (os.getenv("AGENT_ROUTE_HAND_USER") or "").strip():
+        from app.config import get_workspaces_dir
+        d = os.path.join(os.path.dirname(os.path.abspath(get_workspaces_dir())), "mcp")
+        os.makedirs(d, exist_ok=True)
+        os.chmod(d, 0o2750)
+        return d
     d = os.path.join(get_data_dir(), "mcp")
     os.makedirs(d, mode=0o700, exist_ok=True)
     return d
+
+
+def _hand_readable_mode() -> int:
+    """0640 under the split (hand reads it via the agentroute group), else 0600."""
+    return 0o640 if (os.getenv("AGENT_ROUTE_HAND_USER") or "").strip() else 0o600
 
 
 def _headers(cfg: dict, ref: str) -> dict:
@@ -478,7 +496,7 @@ def _prepare_claude(servers: list, workspace_dir: str) -> McpPlan:
     } for c in servers}}
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, ensure_ascii=False, indent=2)
-    os.chmod(path, 0o600)
+    os.chmod(path, _hand_readable_mode())
     return McpPlan(args=["--mcp-config", path, "--strict-mcp-config"],
                    env=_env_for(servers),
                    note="--mcp-config %s (%s)" % (path, ", ".join(c["name"] for c in servers)))
@@ -534,6 +552,25 @@ def _prepare_codex(servers: list, workspace_dir: str) -> McpPlan:
 
 _AGY_CONFIG = "~/.gemini/config/mcp_config.json"
 
+# USER SPLIT: with AGENT_ROUTE_HAND_USER set the node runs as _agentroute and agy
+# runs as the hand user, so `~` here is the NODE's home -- a registry agy never
+# reads. Writing it would look configured and reach nothing (the failure this
+# file has already had twice). The operator writes the hand user's registry once,
+# as that user (provision/mac-user-split.sh prints how); the node never touches it.
+AGY_SPLIT_NOTE = "agy registry is managed as the hand user in split mode"
+_agy_split_logged = False
+
+
+def _agy_split_mode() -> bool:
+    global _agy_split_logged
+    if not (os.getenv("AGENT_ROUTE_HAND_USER") or "").strip():
+        return False
+    if not _agy_split_logged:
+        _agy_split_logged = True
+        _logger.info("MCP agy: %s (AGENT_ROUTE_HAND_USER=%s); the node does not read or "
+                     "write %s", AGY_SPLIT_NOTE, os.getenv("AGENT_ROUTE_HAND_USER"), _AGY_CONFIG)
+    return True
+
 
 def _scrub_agy_node_credentials() -> list:
     """Blank and disable any agy registry entry whose header holds a node credential.
@@ -547,6 +584,8 @@ def _scrub_agy_node_credentials() -> list:
     Runs on every agy task, configured or not. Returns the names it disabled; never raises.
     """
     from app.hands.base import is_node_credential
+    if _agy_split_mode():
+        return []
     try:
         path = os.path.expanduser(_AGY_CONFIG)
         doc = _load_json_or_empty(path)
@@ -608,6 +647,8 @@ def _prepare_agy(servers: list, workspace_dir: str) -> McpPlan:
     gubei12 came to present each other's identity. Re-check by hash after any
     copy of this registry.
     """
+    if _agy_split_mode():
+        return McpPlan(note=AGY_SPLIT_NOTE)
     # REFUSE TO WRITE A PRIVATE ADDRESS INTO A NODE-GLOBAL FILE.
     #
     # agy's registry is the only configuration this module writes that OUTLIVES
@@ -714,6 +755,8 @@ def remove_agy_entry() -> str:
     """Undo _prepare_agy. The agy registry is node-global, so turning the feature
     off in .env is not enough to stop agy offering the server — this is how the
     entry actually goes away."""
+    if _agy_split_mode():
+        return AGY_SPLIT_NOTE + "; remove the entry as the hand user"
     path = os.path.expanduser(_AGY_CONFIG)
     if not os.path.exists(path):
         return "no agy registry"

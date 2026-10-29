@@ -11,7 +11,7 @@ import re
 import shutil
 from typing import Optional, Callable, Any
 
-from app.hands.base import Hand, HandResult, filter_noise, resolve_cli_path, get_cli_env, utf8_stream_decoder
+from app.hands.base import Hand, HandResult, filter_noise, resolve_cli_path, get_cli_env, utf8_stream_decoder, spawn_hand
 from app.hands.stream_processor import GeminiStreamProcessor
 
 
@@ -133,13 +133,13 @@ class GeminiHand(Hand):
             }))
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                cmd, *args,
+            process = await spawn_hand(
+                "gemini", cmd, args,
+                # stdin=DEVNULL is supplied by spawn_hand (direct) or the launcher (user split).
                 # Same blocking-stdin hazard agy_hand documents: the child inherits the
                 # node process's stdin, and a CLI that reads it at startup hangs forever
                 # on an open-but-silent pipe. Measured on opencode: identical command,
                 # same env, timed out at 60s inherited and returned in 7s on DEVNULL.
-                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workspace_dir,
@@ -232,8 +232,8 @@ class GeminiHand(Hand):
         git_dir = os.path.join(workspace_dir, '.git')
         if not os.path.exists(git_dir):
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    'git', 'init', cwd=workspace_dir,
+                proc = await spawn_hand(
+                    'git', 'git', ['init'], cwd=workspace_dir,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )

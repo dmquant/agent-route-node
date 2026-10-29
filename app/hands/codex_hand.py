@@ -12,7 +12,7 @@ import shutil
 from typing import Optional, Callable, Any
 
 from app.mcp_config import prepare as mcp_prepare
-from app.hands.base import Hand, HandResult, filter_noise, _NOISE_PATTERNS, resolve_cli_path, get_cli_env, utf8_stream_decoder
+from app.hands.base import Hand, HandResult, filter_noise, _NOISE_PATTERNS, resolve_cli_path, get_cli_env, utf8_stream_decoder, spawn_hand
 from app.hands.stream_processor import CodexStreamProcessor
 from app.hands.diff_elide import elide_diffs
 
@@ -36,9 +36,15 @@ class CodexHand(Hand):
         model: Optional[str] = None,
         **kwargs,
     ) -> HandResult:
-        cmd = resolve_cli_path("npx")
-        args = ["codex", "exec", "--skip-git-repo-check",
-                "--dangerously-bypass-approvals-and-sandbox"]
+        codex_bin = resolve_cli_path("codex")
+        if not os.getenv("AGENT_ROUTE_HAND_USER", "").strip() and codex_bin != "codex" and os.path.isfile(codex_bin):
+            cmd = codex_bin
+            args = ["exec", "--skip-git-repo-check",
+                    "--dangerously-bypass-approvals-and-sandbox"]
+        else:
+            cmd = resolve_cli_path("npx")
+            args = ["@openai/codex" if os.path.isdir("/opt/ros-runtime/npm") else "codex", "exec", "--skip-git-repo-check",
+                    "--dangerously-bypass-approvals-and-sandbox"]
         # Per-request model selection. Falls back to env (CODEX_DEFAULT_MODEL),
         # then to the CLI's default (currently gpt-5-codex).
         chosen_model = model or os.getenv("CODEX_DEFAULT_MODEL")
@@ -50,6 +56,12 @@ class CodexHand(Hand):
         os.makedirs(workspace_dir, exist_ok=True)
         mcp_plan = mcp_prepare("codex", workspace_dir)
         args.extend(mcp_plan.args)
+        # Opt-in per task: return codex's final message, not its whole stdout+stderr transcript.
+        # A daily whiteboard card returned 2.9-6.1 M chars of transcript (local-fabric b83f4959).
+        last_message_path = None
+        if kwargs.get("result_mode") == "final":
+            last_message_path = os.path.join(workspace_dir, ".codex-last-message.%d.txt" % os.getpid())
+            args.extend(["-o", last_message_path])
         args.append(input)
 
         await self._ensure_git(workspace_dir)
@@ -66,13 +78,13 @@ class CodexHand(Hand):
             }))
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                cmd, *args,
+            process = await spawn_hand(
+                "codex", cmd, args,
+                # stdin=DEVNULL is supplied by spawn_hand (direct) or the launcher (user split).
                 # Same blocking-stdin hazard agy_hand documents: the child inherits the
                 # node process's stdin, and a CLI that reads it at startup hangs forever
                 # on an open-but-silent pipe. Measured on opencode: identical command,
                 # same env, timed out at 60s inherited and returned in 7s on DEVNULL.
-                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workspace_dir,
@@ -139,6 +151,23 @@ class CodexHand(Hand):
 
         output_text = elide_diffs("\n".join(full_output)).strip()
 
+        if last_message_path is not None:
+            final = None
+            try:
+                with open(last_message_path, encoding="utf-8", errors="replace") as f:
+                    final = f.read().strip()
+            except OSError:
+                final = None
+            finally:
+                try:
+                    os.unlink(last_message_path)
+                except OSError:
+                    pass
+            # Only a clean run with a final message narrows the result. A failure, or a run that
+            # wrote no final message, returns the transcript as before so it stays diagnosable.
+            if exit_code == 0 and final:
+                return HandResult(output=final, exit_code=exit_code, transcript=output_text)
+
         return HandResult(output=output_text or f"Exit code {exit_code}", exit_code=exit_code)
 
     async def health_check(self) -> bool:
@@ -149,8 +178,8 @@ class CodexHand(Hand):
         git_dir = os.path.join(workspace_dir, '.git')
         if not os.path.exists(git_dir):
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    'git', 'init', cwd=workspace_dir,
+                proc = await spawn_hand(
+                    'git', 'git', ['init'], cwd=workspace_dir,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )

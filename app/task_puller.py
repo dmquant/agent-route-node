@@ -67,7 +67,11 @@ def get_inflight_count() -> int:
     return len(_inflight_ids)
 
 # File logger
-_log_file = os.path.join(get_data_dir(), "task_puller.log")
+# AGENT_ROUTE_LOG_DIR: under the Mac user split the node's home is 0700, so its log lives in a
+# group-readable directory instead (no secrets are logged). Unset, unchanged.
+_log_dir = os.getenv("AGENT_ROUTE_LOG_DIR") or get_data_dir()
+os.makedirs(_log_dir, exist_ok=True)
+_log_file = os.path.join(_log_dir, "task_puller.log")
 _logger = logging.getLogger("task_puller")
 _logger.setLevel(logging.DEBUG)
 _fh = logging.FileHandler(_log_file, encoding="utf-8")
@@ -110,6 +114,15 @@ async def _execute_one(task: dict, worker_url: str, auth_key: str) -> None:
     meta = task.get("meta") or {}
     requested_model = task.get("model") or meta.get("model")
     allow_fallback = task.get("fallback", meta.get("fallback", True))
+    # Opt-in result narrowing (ai-institute IKG-314). Only "final" narrows; "transcript" is agent-route's
+    # explicit default (8381577) and means today's behaviour. Anything else is ignored and logged, so
+    # an unknown value never changes what a producer receives.
+    result_mode = task.get("result_mode") or meta.get("result_mode")
+    if result_mode == "transcript":
+        result_mode = None
+    elif result_mode not in (None, "final"):
+        _logger.warning(f"IGNORED result_mode={result_mode!r} for {task_id[:12]} (only 'final' is understood)")
+        result_mode = None
     if isinstance(allow_fallback, str):
         allow_fallback = allow_fallback.lower() not in ("false", "0", "no")
 
@@ -205,13 +218,22 @@ async def _execute_one(task: dict, worker_url: str, auth_key: str) -> None:
                     prompt = staged.prompt
 
                 result = None
+                transcript = None
                 try:
                     exec_kwargs = {"workspace_dir": workspace_dir}
                     if requested_model:
                         exec_kwargs["model"] = requested_model
+                    if result_mode:
+                        exec_kwargs["result_mode"] = result_mode
                     result = await hand.execute(prompt, **exec_kwargs)
                     exit_code = result.exit_code
                     output = result.output
+                    transcript = getattr(result, "transcript", None)
+                    if transcript is not None:
+                        from app.result_bound import keep_full_output
+                        kept = keep_full_output(task_id, transcript)
+                        _logger.info(f"FINAL-ONLY {task_id[:12]} | result {len(output)} chars, transcript "
+                                     f"{len(transcript)} chars kept at {kept}")
                     elapsed = (datetime.now() - start_time).total_seconds()
                     _logger.info(f"DONE {task_id[:12]} | hand={hand.name} | exit={exit_code} | {elapsed:.1f}s | {len(output)} chars")
                     if exit_code != 0:
@@ -228,7 +250,9 @@ async def _execute_one(task: dict, worker_url: str, auth_key: str) -> None:
                 # cooldown so future tasks bypass this hand. We do this even
                 # for hands we fell back TO, not just the originally
                 # requested one.
-                rl = parse_rate_limit(hand.name, output, exit_code)
+                # Scan the transcript when the result was narrowed to the final message: a rate limit
+                # is announced in the transcript, and the final message may not mention it.
+                rl = parse_rate_limit(hand.name, transcript if transcript is not None else output, exit_code)
                 if rl is not None:
                     hand_registry.mark_rate_limited_from(rl)
                     # Mark the result text with a structured prefix so the
@@ -243,14 +267,37 @@ async def _execute_one(task: dict, worker_url: str, auth_key: str) -> None:
 
                 metrics = _model_metrics(hand.name, requested_model, getattr(result, "metrics", None))
                 metrics["hand"] = hand.name
-                await _post_result(client, worker_url, auth_key, task_id, exit_code, output, metrics)
 
-                # Push generated workspace files back to R2 for cross-node visibility.
+                # Harvest cited external web URLs into workspace_dir/sources/ (strictly for claude, codex, agy)
+                # Run BEFORE workspace_sync and _post_result so ROS archiveSessionWorkspace sees all sources in R2.
+                if hand.name in ("claude", "codex", "agy") and exit_code == 0:
+                    try:
+                        from app.url_harvester import harvest_urls_for_task
+                        harvest_manifest = await harvest_urls_for_task(
+                            hand.name, task_id, session_id, output, workspace_dir
+                        )
+                        if harvest_manifest is not None:
+                            metrics["url_harvest_discovered"] = harvest_manifest.get("total_urls_discovered", 0)
+                            metrics["url_harvest_archived"] = harvest_manifest.get("archived_count", 0)
+                    except Exception as e:
+                        _logger.warning(f"url_harvester skipped for {task_id[:12]}: {e}")
+
+                # Push generated workspace files (including harvested sources/) back to R2 BEFORE _post_result.
                 try:
                     from app.workspace_sync import sync_session_now
                     await sync_session_now(session_id or task_id)
                 except Exception as e:
                     _logger.warning(f"workspace_sync skipped for {task_id[:12]}: {e}")
+
+                await _post_result(client, worker_url, auth_key, task_id, exit_code, output, metrics)
+
+                # Sweep AGY run-scoped temporary scratch/brain files after outputs & files are synced to ROS.
+                if hand.name == "agy":
+                    try:
+                        from app.agy_sweeper import sweep_after_agy_task
+                        await asyncio.to_thread(sweep_after_agy_task, start_time.timestamp())
+                    except Exception as e:
+                        _logger.warning(f"agy_sweeper post-task skipped for {task_id[:12]}: {e}")
         finally:
             _inflight_ids.discard(task_id)
 

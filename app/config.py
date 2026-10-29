@@ -10,7 +10,11 @@ def get_data_dir() -> str:
 
 
 def get_workspaces_dir() -> str:
-    d = os.path.join(get_data_dir(), "workspaces", "sessions")
+    # Under the user split (AGENT_ROUTE_HAND_USER) the data dir is the node user's
+    # 0700 home, which the hand user cannot enter; workspaces must then live under
+    # the launcher's workspace_root, e.g. /Users/Shared/agentroute-ws.
+    override = os.getenv("AGENT_ROUTE_WORKSPACES_DIR", "").strip()
+    d = override or os.path.join(get_data_dir(), "workspaces", "sessions")
     os.makedirs(d, exist_ok=True)
     return d
 
