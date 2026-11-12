@@ -31,7 +31,7 @@ import time
 from typing import Optional, Callable, Any
 
 from app.mcp_config import prepare as mcp_prepare
-from app.hands.base import Hand, HandResult, filter_noise, resolve_cli_path, get_cli_env, utf8_stream_decoder, spawn_hand
+from app.hands.base import Hand, HandResult, filter_noise, resolve_cli_path, get_cli_env, utf8_stream_decoder, spawn_hand, kill_process_tree, prompt_too_big_for_argv, stage_prompt_file, unlink_prompt_file
 from app.hands.stream_processor import AgyStreamProcessor
 
 
@@ -254,7 +254,18 @@ class AgyHand(Hand):
         args.extend(["--log-file", log_path])
 
         # MUST be last: `--print <prompt>` — the prompt is this flag's value.
-        args.extend(["--print", input])
+        prompt_file = None
+        print_arg = input
+        if prompt_too_big_for_argv(input):
+            try:
+                prompt_file, print_arg = stage_prompt_file(workspace_dir, input)
+            except OSError as e:
+                msg = f"Failed to stage agy prompt file: {e}"
+                if on_log:
+                    await on_log(json.dumps({"chunkType": "error", "content": msg}))
+                _safe_unlink(log_path)
+                return HandResult(output=msg, exit_code=1)
+        args.extend(["--print", print_arg])
 
         if on_log:
             short_dir = os.path.basename(workspace_dir)[:12]
@@ -296,6 +307,7 @@ class AgyHand(Hand):
             if on_log:
                 await on_log(json.dumps({"chunkType": "error", "content": msg}))
             _safe_unlink(log_path)
+            unlink_prompt_file(prompt_file)
             _AGY_LOCK.release()
             return HandResult(output=msg, exit_code=1)
 
@@ -347,8 +359,16 @@ class AgyHand(Hand):
         walkthrough_text: Optional[str] = None
         geo_block_excerpt: Optional[str] = None
         try:
-            await asyncio.gather(stream_stderr(), read_stdout())
-            exit_code = await process.wait()
+            try:
+                await asyncio.gather(stream_stderr(), read_stdout())
+                exit_code = await process.wait()
+            except asyncio.CancelledError:
+                try:
+                    kill_process_tree(process)
+                    await asyncio.wait_for(process.wait(), timeout=10)
+                except Exception:
+                    pass
+                raise
         finally:
             # Read agy's internal log ONCE (for conv-id + geo-block scan)
             # before deleting it. Under agy 1.1.3 the --log-file may never be
@@ -381,6 +401,7 @@ class AgyHand(Hand):
                 geo_block_excerpt = _trajectory_db_geo_block(conv_id, started_at)
 
             _safe_unlink(log_path)
+            unlink_prompt_file(prompt_file)
             _AGY_LOCK.release()
 
         raw_stdout = ''.join(raw_stdout_chunks)

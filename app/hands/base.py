@@ -252,27 +252,74 @@ def hand_spawn_spec(hand_name: str, cmd: str, args, cwd, env) -> dict:
     }
 
 
-async def spawn_hand(hand_name: str, cmd: str, args, *, cwd=None, env=None,
-                     stdout=None, stderr=None, **kwargs):
-    """Start a hand subprocess. Returns the asyncio Process.
+STDIN_PROMPT_THRESHOLD = 128 * 1024
 
-    `kwargs` (e.g. start_new_session from spawn_kwargs()) pass through to
-    asyncio.create_subprocess_exec in both modes.
-    """
+
+def prompt_via_stdin(prompt: str) -> bool:
+    if os.getenv("AGENT_ROUTE_HAND_USER", "").strip():
+        return False
+    return prompt_too_big_for_argv(prompt)
+
+
+def prompt_too_big_for_argv(prompt: str) -> bool:
+    return len(prompt.encode("utf-8")) > STDIN_PROMPT_THRESHOLD
+
+
+def stage_prompt_file(workspace_dir: str, prompt: str):
+    os.makedirs(workspace_dir, exist_ok=True)
+    name = f".agent-route-prompt-{secrets.token_hex(8)}.md"
+    path = os.path.join(workspace_dir, name)
+    mode = 0o644 if os.getenv("AGENT_ROUTE_HAND_USER", "").strip() else 0o600
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    with os.fdopen(fd, "wb") as f:
+        f.write(prompt.encode("utf-8"))
+    if mode != 0o600:
+        os.chmod(path, mode)
+    instruction = (
+        f"Your full task prompt is too large to pass inline. Read the file "
+        f"`{name}` in the current working directory in its entirety, then carry "
+        f"out the instructions in it exactly as if they had been given here."
+    )
+    return path, instruction
+
+
+def unlink_prompt_file(path) -> None:
+    if path:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+async def spawn_hand(hand_name: str, cmd: str, args, *, cwd=None, env=None,
+                     stdout=None, stderr=None, stdin_data=None, **kwargs):
     import asyncio
     import json as _json
 
     hand_user = os.getenv("AGENT_ROUTE_HAND_USER", "").strip()
     if not hand_user:
-        return await asyncio.create_subprocess_exec(
+        process = await asyncio.create_subprocess_exec(
             cmd, *args,
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.DEVNULL if stdin_data is None else asyncio.subprocess.PIPE,
             stdout=stdout,
             stderr=stderr,
             cwd=cwd,
             env=env,
             **kwargs,
         )
+        if stdin_data is not None:
+            async def _feed():
+                try:
+                    process.stdin.write(stdin_data)
+                    await process.stdin.drain()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                finally:
+                    process.stdin.close()
+            process._stdin_feeder = asyncio.ensure_future(_feed())
+        return process
+    if stdin_data is not None:
+        raise ValueError("stdin_data is not supported through the hand launcher")
 
     launcher = os.getenv("AGENT_ROUTE_HAND_LAUNCHER", "").strip() or DEFAULT_HAND_LAUNCHER
     # The launcher setsid()s the hand and records its pgid under this id; the

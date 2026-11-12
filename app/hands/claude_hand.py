@@ -12,7 +12,7 @@ import shutil
 from typing import Optional, Callable, Any
 
 from app.mcp_config import prepare as mcp_prepare
-from app.hands.base import Hand, HandResult, filter_noise, _NOISE_PATTERNS, resolve_cli_path, get_cli_env, utf8_stream_decoder, spawn_hand
+from app.hands.base import Hand, HandResult, filter_noise, _NOISE_PATTERNS, resolve_cli_path, get_cli_env, utf8_stream_decoder, spawn_hand, prompt_via_stdin, prompt_too_big_for_argv, stage_prompt_file, unlink_prompt_file
 from app.hands.stream_processor import ClaudeStreamProcessor
 from app.hands.activity_classifier import classify_line
 
@@ -55,7 +55,13 @@ class ClaudeHand(Hand):
         os.makedirs(workspace_dir, exist_ok=True)
         mcp_plan = mcp_prepare("claude", workspace_dir)
         args.extend(mcp_plan.args)
-        args.append(input)
+        stdin_data = input.encode("utf-8") if prompt_via_stdin(input) else None
+        prompt_file = None
+        if stdin_data is None:
+            arg_prompt = input
+            if prompt_too_big_for_argv(input):
+                prompt_file, arg_prompt = stage_prompt_file(workspace_dir, input)
+            args.append(arg_prompt)
 
         await self._ensure_git(workspace_dir)
         spawn_env = get_cli_env(workspace_dir)
@@ -82,11 +88,13 @@ class ClaudeHand(Hand):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workspace_dir,
                 env=spawn_env,
+                stdin_data=stdin_data,
             )
         except Exception as e:
             msg = f"Failed to spawn claude: {e}"
             if on_log:
                 await on_log(json.dumps({"chunkType": "error", "content": msg}))
+            unlink_prompt_file(prompt_file)
             return HandResult(output=msg, exit_code=1)
 
         # ── Stream stdout line-by-line in real-time ──
@@ -144,8 +152,11 @@ class ClaudeHand(Hand):
                     if on_log:
                         await on_log(json.dumps({"chunkType": "system", "content": line}))
 
-        await asyncio.gather(stream_stdout(), stream_stderr())
-        exit_code = await process.wait()
+        try:
+            await asyncio.gather(stream_stdout(), stream_stderr())
+            exit_code = await process.wait()
+        finally:
+            unlink_prompt_file(prompt_file)
 
         # Flush processor
         if on_log:
