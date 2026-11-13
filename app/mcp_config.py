@@ -526,17 +526,29 @@ def _prepare_codex(servers: list, workspace_dir: str) -> McpPlan:
     """
     usable, declined = [], []
     for cfg in servers:
-        if cfg["header"].lower() == "authorization" and cfg["scheme"] == "Bearer ":
+        scheme = cfg.get("scheme") or ""
+        if cfg["header"].lower() == "authorization" and scheme == "Bearer ":
+            usable.append(cfg)
+        elif scheme == "" and cfg["header"].lower() != "authorization":
+            # ARC-209: codex also has `env_http_headers` (header name -> env var
+            # NAME), which carries a raw-value header such as X-API-Key. It cannot
+            # prefix a scheme, so only scheme-less headers qualify.
             usable.append(cfg)
         else:
-            declined.append("%s (needs %s)" % (cfg["name"], cfg["scheme"] + cfg["header"]))
+            declined.append("%s (needs %s)" % (cfg["name"], scheme + cfg["header"]))
 
     args = []
     for cfg in usable:
         n = cfg["name"]
+        if cfg["header"].lower() == "authorization":
+            auth = f'mcp_servers.{n}.bearer_token_env_var="{cfg["key_var"]}"'
+            auth_arg = ["-c", auth]
+        else:
+            auth_arg = ["-c", f'mcp_servers.{n}.env_http_headers='
+                              f'{{"{cfg["header"]}"="{cfg["key_var"]}"}}']
         args += [
             "-c", f'mcp_servers.{n}.url="{cfg["url"]}"',
-            "-c", f'mcp_servers.{n}.bearer_token_env_var="{cfg["key_var"]}"',
+            *auth_arg,
             # Bound the wait so an MCP that is down costs seconds, not the task.
             "-c", f"mcp_servers.{n}.startup_timeout_sec=10",
         ]
