@@ -520,8 +520,8 @@ async def tasks_inflight():
     13 such rows across SG and gubei12 on 2026-09-11 against zero live processes,
     and `max_wait_ms` is 0 on them so no server-side deadline reaps them either.
     """
-    from app.task_puller import get_inflight_count
-    return {"inflight": get_inflight_count()}
+    from app.task_puller import get_inflight_count, get_inflight_ids
+    return {"inflight": get_inflight_count(), "ids": get_inflight_ids()}
 
 
 @app.get("/api/hands/health")

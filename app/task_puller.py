@@ -66,6 +66,11 @@ def get_inflight_count() -> int:
     """
     return len(_inflight_ids)
 
+
+def get_inflight_ids() -> list[str]:
+    """Sorted ids of tasks the puller is executing (for orphan reconciliation)."""
+    return sorted(_inflight_ids)
+
 # File logger
 # AGENT_ROUTE_LOG_DIR: under the Mac user split the node's home is 0700, so its log lives in a
 # group-readable directory instead (no secrets are logged). Unset, unchanged.
@@ -446,24 +451,25 @@ async def _post_result(client, worker_url, auth_key, task_id, exit_code, result_
     body = {"exitCode": exit_code, "resultText": result_text}
     if metrics is not None:
         body["metrics"] = metrics
-    try:
-        resp1 = await client.post(
-            f"{worker_url}/api/tasks/{task_id}/complete",
-            json=body,
-            headers={"X-API-Key": auth_key, "Content-Type": "application/json"},
-            timeout=30,
-        )
-        _logger.info(f"CALLBACK {task_id[:12]} | tasks/complete → {resp1.status_code}")
-        resp2 = await client.post(
-            f"{worker_url}/api/nodes/task-complete/{task_id}",
-            json=body,
-            headers={"X-API-Key": auth_key, "Content-Type": "application/json"},
-            timeout=10,
-        )
-        _logger.info(f"CALLBACK {task_id[:12]} | nodes/task-complete → {resp2.status_code}")
-    except Exception as e:
-        _logger.error(f"CALLBACK {task_id[:12]} | FAILED: {e}")
-        print(f"[task-puller] Callback failed for {task_id[:8]}: {e}")
+    for label, url, tmo in (
+        ("tasks/complete", f"{worker_url}/api/tasks/{task_id}/complete", 30),
+        ("nodes/task-complete", f"{worker_url}/api/nodes/task-complete/{task_id}", 15),
+    ):
+        for attempt in range(6):
+            try:
+                resp = await client.post(
+                    url,
+                    json=body,
+                    headers={"X-API-Key": auth_key, "Content-Type": "application/json"},
+                    timeout=tmo,
+                )
+                _logger.info(f"CALLBACK {task_id[:12]} | {label} (try {attempt+1}) → {resp.status_code}")
+                if resp.status_code < 500 and resp.status_code != 429:
+                    break
+            except Exception as e:
+                _logger.warning(f"CALLBACK {task_id[:12]} | {label} (try {attempt+1}) error: {e}")
+            if attempt < 5:
+                await asyncio.sleep(2 * (attempt + 1))
 
 
 async def _poll_loop():
