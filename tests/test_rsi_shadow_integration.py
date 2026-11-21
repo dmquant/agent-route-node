@@ -135,10 +135,15 @@ class ShadowHomeIsolationTest(unittest.TestCase):
     def test_seatbelt_profile_blocks_secret_read_and_home_write_at_kernel(self):
         with tempfile.TemporaryDirectory() as fake_home:
             ar_dir = os.path.join(fake_home, ".agent-route")
+            docs_dir = os.path.join(fake_home, "Documents")
             os.makedirs(ar_dir)
+            os.makedirs(docs_dir)
             secret_path = os.path.join(ar_dir, ".env")
+            doc_path = os.path.join(docs_dir, "private.txt")
             with open(secret_path, "w") as f:
                 f.write("NODE_KEY=canary-secret-12345\n")
+            with open(doc_path, "w") as f:
+                f.write("PRIVATE_DOC=canary-doc-67890\n")
             profile = _build_shadow_seatbelt_profile(fake_home)
             write_target = os.path.join(fake_home, "should_not_write.txt")
             r = subprocess.run(
@@ -148,19 +153,21 @@ class ShadowHomeIsolationTest(unittest.TestCase):
                     (
                         "import sys\n"
                         "out = []\n"
-                        "try:\n open(sys.argv[1]).read(); out.append('READ_OK')\n"
-                        "except PermissionError:\n out.append('READ_EPERM')\n"
-                        "try:\n open(sys.argv[2], 'w').write('x'); out.append('WRITE_OK')\n"
-                        "except PermissionError:\n out.append('WRITE_EPERM')\n"
+                        "for p in sys.argv[1:3]:\n"
+                        "  try:\n    open(p).read(); out.append('READ_OK')\n"
+                        "  except PermissionError:\n    out.append('READ_EPERM')\n"
+                        "try:\n  open(sys.argv[3], 'w').write('x'); out.append('WRITE_OK')\n"
+                        "except PermissionError:\n  out.append('WRITE_EPERM')\n"
                         "print(','.join(out))\n"
                     ),
                     secret_path,
+                    doc_path,
                     write_target,
                 ],
                 capture_output=True, text=True, timeout=15,
             )
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual(r.stdout.strip(), "READ_EPERM,WRITE_EPERM")
+            self.assertEqual(r.stdout.strip(), "READ_EPERM,READ_EPERM,WRITE_EPERM")
             self.assertFalse(os.path.exists(write_target))
 
 
@@ -170,7 +177,7 @@ class AgyHandShadowExecutionTest(unittest.TestCase):
             cli_dir = os.path.join(fake_home, ".gemini", "antigravity-cli")
             os.makedirs(cli_dir)
             with open(os.path.join(cli_dir, "antigravity-oauth-token"), "w") as f:
-                f.write('{"token":{"access_token":"ya29.fake-access-token-secret-999","refresh_token":"1//fake-refresh-token-secret-888"}}\n')
+                f.write('{"token":{"access_token":"ya29.fake-access-token-secret-999","refresh_token":"1//fake-refresh-token-secret-888","auth":"opaque-auth-blob-77777","token_type":"Bearer"}}\n')
 
             dirty_env = {
                 "PATH": "/usr/bin:/bin",
@@ -195,7 +202,7 @@ class AgyHandShadowExecutionTest(unittest.TestCase):
                 with open(os.path.join(kw["env"]["HOME"], ".gemini", "config", "mcp_config.json")) as mf:
                     captured["mcp_cfg_during_run"] = json.load(mf)
                 return _FakeProcess(
-                    stdout=b'{"thesis":"ok","echo":"ya29.fake-access-token-secret-999","ref":"1//fake-refresh-token-secret-888"}\n'
+                    stdout=b'{"thesis":"ok","echo":"ya29.fake-access-token-secret-999","ref":"1//fake-refresh-token-secret-888","a":"opaque-auth-blob-77777"}\n'
                 )
 
             with mock.patch("app.hands.agy_hand.os.path.expanduser", return_value=fake_home), \
@@ -207,11 +214,12 @@ class AgyHandShadowExecutionTest(unittest.TestCase):
             self.assertEqual(res.exit_code, 0)
             self.assertNotIn("ya29.fake-access-token-secret-999", res.output)
             self.assertNotIn("1//fake-refresh-token-secret-888", res.output)
+            self.assertNotIn("opaque-auth-blob-77777", res.output)
             self.assertIn("[REDACTED_AGY_TOKEN]", res.output)
             mock_mcp.assert_not_called()
             self.assertEqual(captured["cmd"], _SANDBOX_EXEC)
             self.assertEqual(captured["args"][0], "-p")
-            self.assertIn(".agent-route", captured["args"][1])
+            self.assertIn('(deny file-read* (subpath "/Users"))', captured["args"][1])
             self.assertEqual(captured["args"][2], "/opt/ros-runtime/bin/agy")
             self.assertIn("--mode", captured["args"])
             self.assertEqual(captured["args"][captured["args"].index("--mode") + 1], "plan")
@@ -222,6 +230,31 @@ class AgyHandShadowExecutionTest(unittest.TestCase):
             self.assertEqual(captured["mcp_cfg_during_run"], {"mcpServers": {}})
             self.assertNotEqual(captured["env"]["HOME"], fake_home)
             self.assertFalse(os.path.exists(captured["env"]["HOME"]))
+
+    def test_agy_shadow_redacts_token_in_geo_block_excerpt_path(self):
+        with tempfile.TemporaryDirectory() as fake_home, tempfile.TemporaryDirectory() as ws:
+            cli_dir = os.path.join(fake_home, ".gemini", "antigravity-cli")
+            os.makedirs(cli_dir)
+            with open(os.path.join(cli_dir, "antigravity-oauth-token"), "w") as f:
+                f.write('{"credential":"secret-geo-leak-99887766"}\n')
+
+            hand = AgyHand()
+            decision = guard(_valid_pulled_shadow_task("agy"), hand, {"PATH": "/usr/bin"})
+
+            async def fake_spawn(name, cmd, args, **kw):
+                log_path = args[args.index("--log-file") + 1]
+                with open(log_path, "w") as lf:
+                    lf.write("User location is not supported for the API use: secret-geo-leak-99887766\n")
+                return _FakeProcess(stdout=b"", stderr=b"", returncode=0)
+
+            with mock.patch("app.hands.agy_hand.os.path.expanduser", return_value=fake_home), \
+                 mock.patch("app.hands.agy_hand.resolve_cli_path", return_value="/opt/ros-runtime/bin/agy"), \
+                 mock.patch("app.hands.agy_hand.spawn_hand", side_effect=fake_spawn):
+                res = asyncio.run(hand.execute("hello shadow", workspace_dir=ws, rsi_shadow=decision))
+
+            self.assertNotEqual(res.exit_code, 0)
+            self.assertNotIn("secret-geo-leak-99887766", res.output)
+            self.assertIn("[REDACTED_AGY_TOKEN]", res.output)
 
     def test_agy_shadow_refuses_malformed_decision(self):
         hand = AgyHand()

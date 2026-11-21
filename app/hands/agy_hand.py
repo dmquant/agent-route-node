@@ -233,53 +233,46 @@ def _sb_quote(val: str) -> str:
 
 
 def _build_shadow_seatbelt_profile(real_home: str) -> str:
-    """Build a macOS Seatbelt profile that kernel-denies reads of node/host
-    credentials and writes under real_home or /var/ros (ARC-303 G1)."""
+    """Build a macOS Seatbelt profile that kernel-denies all reads and writes
+    under /Users, real_home, and /var/ros (ARC-303/304 G1)."""
     rh = os.path.realpath(real_home)
-    deny_read_subpaths = [
-        os.path.join(rh, ".agent-route"),
-        os.path.join(rh, ".ssh"),
-        os.path.join(rh, ".claude"),
-        os.path.join(rh, ".codex"),
-        os.path.join(rh, ".gemini"),
-        os.path.join(rh, ".aws"),
-        os.path.join(rh, ".config"),
-        os.path.join(rh, "Library", "Keychains"),
-        os.path.join(rh, "prog"),
-        "/var/ros",
-        "/private/var/ros",
+    rules = [
+        "(version 1)",
+        "(allow default)",
+        '(deny file-read* (subpath "/Users"))',
+        f'(deny file-read* (subpath "{_sb_quote(rh)}"))',
+        '(deny file-read* (subpath "/var/ros") (subpath "/private/var/ros"))',
+        '(deny file-write* (subpath "/Users"))',
+        f'(deny file-write* (subpath "{_sb_quote(rh)}"))',
+        '(deny file-write* (subpath "/var/ros") (subpath "/private/var/ros"))',
     ]
-    deny_read_literals = [
-        os.path.join(rh, ".git-credentials"),
-        os.path.join(rh, ".netrc"),
-    ]
-    rules = ["(version 1)", "(allow default)"]
-    for sp in deny_read_subpaths:
-        rules.append(f'(deny file-read* (subpath "{_sb_quote(sp)}"))')
-    for lit in deny_read_literals:
-        rules.append(f'(deny file-read* (literal "{_sb_quote(lit)}"))')
-    rules.append(f'(deny file-read* (regex #"^{_sb_quote(re.escape(rh))}/agentroute-"))')
-    rules.append(f'(deny file-write* (subpath "{_sb_quote(rh)}"))')
-    rules.append('(deny file-write* (subpath "/var/ros") (subpath "/private/var/ros"))')
     return "\n".join(rules)
 
 
+_TOKEN_META_KEYS = frozenset({"token_type", "scope", "expiry", "expires_at", "type"})
+
+
 def _extract_token_secrets(token_path: str) -> tuple[str, ...]:
-    """Extract OAuth token strings (>=12 chars) for G2 output redaction."""
+    """Extract every string value (>=12 chars) from the agy OAuth token file
+    (excluding standard non-secret metadata keys) for G2 output redaction."""
     secrets: set[str] = set()
 
     def _walk(obj: Any) -> None:
         if isinstance(obj, dict):
             for k, v in obj.items():
-                if isinstance(v, str) and len(v) >= 12 and (
-                    "token" in k.lower() or "secret" in k.lower() or "key" in k.lower()
-                ):
-                    secrets.add(v)
+                if isinstance(v, str):
+                    if len(v) >= 12 and str(k).lower() not in _TOKEN_META_KEYS:
+                        secrets.add(v)
                 else:
                     _walk(v)
         elif isinstance(obj, list):
             for item in obj:
-                _walk(item)
+                if isinstance(item, str) and len(item) >= 12:
+                    secrets.add(item)
+                else:
+                    _walk(item)
+        elif isinstance(obj, str) and len(obj) >= 12:
+            secrets.add(obj)
 
     try:
         with open(token_path, "r", encoding="utf-8") as tf:
@@ -538,6 +531,8 @@ class AgyHand(Hand):
                 geo_block_excerpt = _scan_geo_block(log_text, ''.join(raw_stderr_chunks))
                 if not geo_block_excerpt and not is_shadow:
                     geo_block_excerpt = _trajectory_db_geo_block(conv_id, started_at)
+                if is_shadow and shadow_secrets and geo_block_excerpt:
+                    geo_block_excerpt = _redact_secrets(geo_block_excerpt, shadow_secrets)
 
                 _safe_unlink(log_path)
                 unlink_prompt_file(prompt_file)
@@ -610,6 +605,9 @@ class AgyHand(Hand):
                     f"no error recovered from the log or trajectory DB (agy "
                     f"exit {exit_code}); treated as failure, not success."
                 )
+
+        if is_shadow and shadow_secrets and output_text:
+            output_text = _redact_secrets(output_text, shadow_secrets)
 
         # Emit the final output as a single text chunk so the frontend's
         # OutputParser can render markdown / code blocks.
