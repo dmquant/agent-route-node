@@ -26,6 +26,7 @@ import asyncio
 import os
 import re
 import json
+import shutil
 import tempfile
 import time
 from typing import Optional, Callable, Any
@@ -172,6 +173,57 @@ def _trajectory_db_geo_block(conv_id: Optional[str], started_at: float) -> Optio
     return None
 
 
+def _prepare_shadow_home(real_home: str) -> str:
+    """Create a 0700 isolated HOME for an rsi-shadow agy execution.
+
+    Contains ONLY the agy OAuth token, a sanitized settings.json preserving
+    model/effort (stripping permissions & trustedWorkspaces), and an explicit
+    empty mcp_config.json (`{"mcpServers":{}}`) so node-global MCP servers and
+    other credentials (~/.ssh, ~/.claude, ~/.codex, ~/.agent-route) are never
+    reachable. Raises RuntimeError if the token file is absent (fail closed).
+    """
+    src_tok = os.path.join(real_home, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+    if not os.path.isfile(src_tok):
+        raise RuntimeError("antigravity-oauth-token absent for rsi-shadow")
+    shadow_home = tempfile.mkdtemp(prefix="agy-rsi-shadow-home-")
+    try:
+        os.chmod(shadow_home, 0o700)
+        cli_dir = os.path.join(shadow_home, ".gemini", "antigravity-cli")
+        cfg_dir = os.path.join(shadow_home, ".gemini", "config")
+        os.makedirs(cli_dir, mode=0o700, exist_ok=True)
+        os.makedirs(cfg_dir, mode=0o700, exist_ok=True)
+
+        dst_tok = os.path.join(cli_dir, "antigravity-oauth-token")
+        shutil.copy2(src_tok, dst_tok)
+        os.chmod(dst_tok, 0o600)
+
+        safe_settings: dict[str, Any] = {}
+        src_set = os.path.join(real_home, ".gemini", "antigravity-cli", "settings.json")
+        if os.path.isfile(src_set):
+            try:
+                with open(src_set, "r", encoding="utf-8") as sf:
+                    raw_set = json.load(sf)
+                if isinstance(raw_set, dict):
+                    for k in ("model", "effort"):
+                        if k in raw_set:
+                            safe_settings[k] = raw_set[k]
+            except Exception:
+                safe_settings = {}
+        dst_set = os.path.join(cli_dir, "settings.json")
+        with open(dst_set, "w", encoding="utf-8") as df:
+            json.dump(safe_settings, df)
+        os.chmod(dst_set, 0o600)
+
+        dst_mcp = os.path.join(cfg_dir, "mcp_config.json")
+        with open(dst_mcp, "w", encoding="utf-8") as mf:
+            mf.write('{"mcpServers":{}}\n')
+        os.chmod(dst_mcp, 0o600)
+        return shadow_home
+    except Exception:
+        shutil.rmtree(shadow_home, ignore_errors=True)
+        raise
+
+
 class AgyHand(Hand):
     """Antigravity CLI agent via the `agy` binary.
 
@@ -183,227 +235,220 @@ class AgyHand(Hand):
     hand_type = "cli"
     description = "Google Antigravity CLI (agy) — Gemini agent, successor to gemini-cli"
 
+    @property
+    def rsi_shadow_capable(self) -> bool:
+        """True unless operator sets RSI_SHADOW_ENABLE_AGY=false (fail-closed kill)."""
+        return os.environ.get("RSI_SHADOW_ENABLE_AGY", "true").lower() != "false"
+
     async def execute(
         self,
         input: str,
         workspace_dir: str = "/tmp",
         on_log: Optional[Callable[[str], Any]] = None,
         model: Optional[str] = None,
+        rsi_shadow: Any = None,
         **kwargs,
     ) -> HandResult:
+        is_shadow = rsi_shadow is not None
+        shadow_home: Optional[str] = None
+        if is_shadow:
+            if (
+                getattr(rsi_shadow, "allowed", False) is not True
+                or getattr(rsi_shadow, "applies", False) is not True
+                or not isinstance(getattr(rsi_shadow, "env", None), dict)
+            ):
+                return HandResult(
+                    output="[LANE_REFUSED] malformed rsi_shadow decision; the task was not run",
+                    exit_code=66,
+                )
+
         os.makedirs(workspace_dir, exist_ok=True)
-        await self._ensure_git(workspace_dir)
-
-        # Second delivery path, inert unless AI_INSTITUTE_MCP_URL is set; the R2
-        # pre-stage in task_puller still runs regardless. agy has no per-task MCP
-        # scope, so this maintains a node-global registry entry idempotently
-        # rather than passing anything on the command line. See app/mcp_config.py.
-        mcp_plan = mcp_prepare("agy", workspace_dir)
-        spawn_env = get_cli_env(workspace_dir)
-        spawn_env.update(mcp_plan.env)
-
         cmd = resolve_cli_path("agy")
-        # NOTE on flags:
-        #  - `--print` (a.k.a. `--prompt`) is a value-taking flag — it consumes
-        #    the NEXT token as the prompt. So every other flag MUST come before
-        #    it, and the prompt MUST be its immediate value, or agy treats the
-        #    next flag string as the prompt and drops the real input.
-        args: list[str] = []
 
-        # agy print mode ignores cwd for workspace context — it needs an
-        # explicit --add-dir to know where to read/write files. Without it,
-        # file ops land in agy's scratch dir, not the session workspace.
-        args.extend(["--add-dir", workspace_dir])
+        try:
+            if is_shadow:
+                try:
+                    shadow_home = _prepare_shadow_home(os.path.expanduser("~"))
+                except Exception as e:
+                    return HandResult(
+                        output=f"[LANE_REFUSED] rsi-shadow isolation setup failed ({e}); the task was not run",
+                        exit_code=66,
+                    )
+                # Strictly use rsi_shadow_guard's scrubbed allowlist env + ephemeral HOME.
+                # NEVER call mcp_prepare() or inherit node/MCP/cloud credentials.
+                spawn_env = dict(rsi_shadow.env)
+                spawn_env["HOME"] = shadow_home
+                spawn_env["TMPDIR"] = workspace_dir
+                cmd_dir = os.path.dirname(cmd)
+                if cmd_dir:
+                    cur_path = spawn_env.get("PATH", "")
+                    parts = [p for p in cur_path.split(os.pathsep) if p]
+                    if cmd_dir not in parts:
+                        spawn_env["PATH"] = os.pathsep.join([cmd_dir] + parts) if parts else cmd_dir
+            else:
+                await self._ensure_git(workspace_dir)
+                # Second delivery path, inert unless AI_INSTITUTE_MCP_URL is set; the R2
+                # pre-stage in task_puller still runs regardless. agy has no per-task MCP
+                # scope, so this maintains a node-global registry entry idempotently
+                # rather than passing anything on the command line. See app/mcp_config.py.
+                mcp_plan = mcp_prepare("agy", workspace_dir)
+                spawn_env = get_cli_env(workspace_dir)
+                spawn_env.update(mcp_plan.env)
 
-        # Auto-approve tool permissions in print mode. REVERSAL of a prior
-        # decision: an earlier comment claimed agy "writes files reliably
-        # WITHOUT it", which was true before agy's 2026-05-20 release. Since
-        # then, print mode SOFT-DENIES the Edit/file tool
-        # (tool_confirmation_manager: `Print mode: soft-denying tool
-        # confirmation "Edit"` → `approved=false`), so agy declines every file
-        # write, produces empty stdout, and exits 0 — the "0% file capture"
-        # defect (the twin of the exit-0 silent-blank). Verified on agy 1.1.3:
-        # WITHOUT the flag a file-write probe writes nothing + empty stdout;
-        # WITH it (`Print mode: --dangerously-skip-permissions set,
-        # auto-approving all tool permissions`) the file lands (411B, marker
-        # present) and stdout returns the real answer. The flag auto-approves
-        # ALL agy tool calls incl. shell — acceptable for this autonomous
-        # execution node (same posture as the claude/codex hands), gated by
-        # agy's own config allow-list. Disable via AGY_SKIP_PERMISSIONS=false.
-        if os.getenv("AGY_SKIP_PERMISSIONS", "true") != "false":
-            args.append("--dangerously-skip-permissions")
+            # NOTE on flags:
+            #  - `--print` (a.k.a. `--prompt`) is a value-taking flag — it consumes
+            #    the NEXT token as the prompt. So every other flag MUST come before
+            #    it, and the prompt MUST be its immediate value, or agy treats the
+            #    next flag string as the prompt and drops the real input.
+            args: list[str] = []
 
-        # agy does NOT accept --model in --print mode (the flag is unknown
-        # and the binary exits non-zero). Model is set via agy's UI config.
-        # If a caller passes `model=`, we record it for traceability but
-        # don't forward it to the subprocess.
+            # agy print mode ignores cwd for workspace context — it needs an
+            # explicit --add-dir to know where to read/write files. Without it,
+            # file ops land in agy's scratch dir, not the session workspace.
+            args.extend(["--add-dir", workspace_dir])
 
-        # Per-request timeout. agy's built-in --print-timeout default is only
-        # 5m, which cuts off heavy bilingual research BEFORE it writes its
-        # files — the model streams a partial summary and exits, so no report
-        # lands on disk (the failure the institute saw). Default to 1800s
-        # (30m). Override via AGY_PRINT_TIMEOUT (accepts Go duration, e.g.
-        # "1800s" or "30m"). NOTE: keep this <= the worker's 30-min zombie
-        # reaper so a legit long run finishes + syncs before being reaped.
-        timeout_s = os.getenv("AGY_PRINT_TIMEOUT", "1800s")
-        args.extend(["--print-timeout", timeout_s])
+            if is_shadow:
+                # Read-only plan mode: NEVER pass --dangerously-skip-permissions.
+                args.extend(["--mode", "plan"])
+            elif os.getenv("AGY_SKIP_PERMISSIONS", "true") != "false":
+                args.append("--dangerously-skip-permissions")
 
-        # Capture agy's internal logs to a tmpfile so they don't pollute
-        # the workspace and so we can clean up after.
-        log_fd, log_path = tempfile.mkstemp(prefix="agy-", suffix=".log")
-        os.close(log_fd)
-        args.extend(["--log-file", log_path])
+            timeout_s = os.getenv("AGY_PRINT_TIMEOUT", "1800s")
+            args.extend(["--print-timeout", timeout_s])
 
-        # MUST be last: `--print <prompt>` — the prompt is this flag's value.
-        prompt_file = None
-        print_arg = input
-        if prompt_too_big_for_argv(input):
+            log_fd, log_path = tempfile.mkstemp(prefix="agy-", suffix=".log")
+            os.close(log_fd)
+            args.extend(["--log-file", log_path])
+
+            prompt_file = None
+            print_arg = input
+            if prompt_too_big_for_argv(input):
+                try:
+                    prompt_file, print_arg = stage_prompt_file(workspace_dir, input)
+                except OSError as e:
+                    msg = f"Failed to stage agy prompt file: {e}"
+                    if on_log:
+                        await on_log(json.dumps({"chunkType": "error", "content": msg}))
+                    _safe_unlink(log_path)
+                    return HandResult(output=msg, exit_code=1)
+            args.extend(["--print", print_arg])
+
+            if on_log:
+                short_dir = os.path.basename(workspace_dir)[:12]
+                note = f"⚡ Executing with **agy** (workspace: `{short_dir}…`)"
+                if model:
+                    note += f" — requested model `{model}` (note: agy ignores per-call model)"
+                await on_log(json.dumps({"chunkType": "progress", "content": note}))
+
+            if on_log and _AGY_LOCK.locked():
+                await on_log(json.dumps({
+                    "chunkType": "system",
+                    "content": f"⏳ agy busy on this node — queued (limit={_AGY_MAX_CONCURRENT})",
+                }))
+            await _AGY_LOCK.acquire()
+            started_at = time.time()
+
             try:
-                prompt_file, print_arg = stage_prompt_file(workspace_dir, input)
-            except OSError as e:
-                msg = f"Failed to stage agy prompt file: {e}"
+                process = await spawn_hand(
+                    "agy", cmd, args,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=workspace_dir,
+                    env=spawn_env,
+                )
+            except Exception as e:
+                msg = f"Failed to spawn agy: {e}"
                 if on_log:
                     await on_log(json.dumps({"chunkType": "error", "content": msg}))
                 _safe_unlink(log_path)
+                unlink_prompt_file(prompt_file)
+                _AGY_LOCK.release()
                 return HandResult(output=msg, exit_code=1)
-        args.extend(["--print", print_arg])
 
-        if on_log:
-            short_dir = os.path.basename(workspace_dir)[:12]
-            note = f"⚡ Executing with **agy** (workspace: `{short_dir}…`)"
-            if model:
-                note += f" — requested model `{model}` (note: agy ignores per-call model)"
-            await on_log(json.dumps({"chunkType": "progress", "content": note}))
+            processor = AgyStreamProcessor()
+            raw_stdout_chunks: list[str] = []
+            raw_stderr_chunks: list[str] = []
 
-        # Serialize: only one agy subprocess runs per node at a time. Held
-        # through artifact capture so the scratch scan sees only this run's
-        # files. Acquired here (not earlier) so the cheap setup above isn't
-        # serialized. started_at is taken after acquire so the scratch
-        # mtime filter excludes any prior serialized run's files.
-        if on_log and _AGY_LOCK.locked():
-            await on_log(json.dumps({
-                "chunkType": "system",
-                "content": f"⏳ agy busy on this node — queued (limit={_AGY_MAX_CONCURRENT})",
-            }))
-        await _AGY_LOCK.acquire()
-        started_at = time.time()
+            async def stream_stderr():
+                from app.hands.base import _NOISE_PATTERNS
+                from app.hands.activity_classifier import classify_line
+                buf = ""
+                dec = utf8_stream_decoder()
+                while True:
+                    chunk = await process.stderr.read(256)
+                    if not chunk:
+                        tail = dec.decode(b"", final=True)
+                        if tail:
+                            raw_stderr_chunks.append(tail)
+                        break
+                    text = dec.decode(chunk)
+                    raw_stderr_chunks.append(text)
+                    buf += text
+                    while '\n' in buf:
+                        line, buf = buf.split('\n', 1)
+                        line = line.rstrip()
+                        if not line:
+                            continue
+                        if any(p.search(line) for p in _NOISE_PATTERNS):
+                            continue
+                        if on_log:
+                            activity = classify_line(line, agent="gemini")
+                            if activity:
+                                await on_log(json.dumps(activity.to_chunk()))
+                            else:
+                                await on_log(json.dumps({"chunkType": "system", "content": line}))
 
-        try:
-            process = await spawn_hand(
-                "agy", cmd, args,
-                # stdin=DEVNULL is supplied by spawn_hand (direct) or the launcher (user split).
-                # CRITICAL: redirect stdin to /dev/null. Without this the child
-                # inherits the node process's stdin; agy's print mode does a
-                # blocking read() on stdin at startup and, with an open/empty
-                # stdin, hangs forever — a 0-byte log, ~0 CPU stall (the
-                # "auth timeout" the institute saw). DEVNULL makes that read
-                # return EOF immediately, so agy proceeds non-interactively.
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=workspace_dir,
-                env=spawn_env,
-            )
-        except Exception as e:
-            msg = f"Failed to spawn agy: {e}"
-            if on_log:
-                await on_log(json.dumps({"chunkType": "error", "content": msg}))
-            _safe_unlink(log_path)
-            unlink_prompt_file(prompt_file)
-            _AGY_LOCK.release()
-            return HandResult(output=msg, exit_code=1)
+            async def read_stdout():
+                dec = utf8_stream_decoder()
+                while True:
+                    chunk = await process.stdout.read(4096)
+                    if not chunk:
+                        tail = dec.decode(b"", final=True)
+                        if tail:
+                            raw_stdout_chunks.append(tail)
+                        break
+                    raw_stdout_chunks.append(dec.decode(chunk))
 
-        processor = AgyStreamProcessor()
-        raw_stdout_chunks: list[str] = []
-        raw_stderr_chunks: list[str] = []
-
-        async def stream_stderr():
-            from app.hands.base import _NOISE_PATTERNS
-            from app.hands.activity_classifier import classify_line
-            buf = ""
-            dec = utf8_stream_decoder()
-            while True:
-                chunk = await process.stderr.read(256)
-                if not chunk:
-                    tail = dec.decode(b"", final=True)
-                    if tail:
-                        raw_stderr_chunks.append(tail)
-                    break
-                text = dec.decode(chunk)
-                raw_stderr_chunks.append(text)
-                buf += text
-                while '\n' in buf:
-                    line, buf = buf.split('\n', 1)
-                    line = line.rstrip()
-                    if not line:
-                        continue
-                    if any(p.search(line) for p in _NOISE_PATTERNS):
-                        continue
-                    if on_log:
-                        activity = classify_line(line, agent="gemini")
-                        if activity:
-                            await on_log(json.dumps(activity.to_chunk()))
-                        else:
-                            await on_log(json.dumps({"chunkType": "system", "content": line}))
-
-        async def read_stdout():
-            dec = utf8_stream_decoder()
-            while True:
-                chunk = await process.stdout.read(4096)
-                if not chunk:
-                    tail = dec.decode(b"", final=True)
-                    if tail:
-                        raw_stdout_chunks.append(tail)
-                    break
-                raw_stdout_chunks.append(dec.decode(chunk))
-
-        captured_artifacts: list[str] = []
-        walkthrough_text: Optional[str] = None
-        geo_block_excerpt: Optional[str] = None
-        try:
+            captured_artifacts: list[str] = []
+            walkthrough_text: Optional[str] = None
+            geo_block_excerpt: Optional[str] = None
             try:
-                await asyncio.gather(stream_stderr(), read_stdout())
-                exit_code = await process.wait()
-            except asyncio.CancelledError:
                 try:
-                    kill_process_tree(process)
-                    await asyncio.wait_for(process.wait(), timeout=10)
-                except Exception:
-                    pass
-                raise
+                    await asyncio.gather(stream_stderr(), read_stdout())
+                    exit_code = await process.wait()
+                except asyncio.CancelledError:
+                    try:
+                        kill_process_tree(process)
+                        await asyncio.wait_for(process.wait(), timeout=10)
+                    except Exception:
+                        pass
+                    raise
+            finally:
+                try:
+                    with open(log_path, "r", errors="replace") as _lf:
+                        log_text = _lf.read()
+                except OSError:
+                    log_text = ""
+                conv_id = _parse_conversation_id_from_text(log_text)
+
+                if not is_shadow and os.getenv("AGY_CAPTURE_ARTIFACTS", "true") != "false":
+                    try:
+                        captured_artifacts, walkthrough_text = _capture_artifacts(
+                            workspace_dir, conv_id, started_at
+                        )
+                    except Exception:
+                        pass
+
+                geo_block_excerpt = _scan_geo_block(log_text, ''.join(raw_stderr_chunks))
+                if not geo_block_excerpt and not is_shadow:
+                    geo_block_excerpt = _trajectory_db_geo_block(conv_id, started_at)
+
+                _safe_unlink(log_path)
+                unlink_prompt_file(prompt_file)
+                _AGY_LOCK.release()
         finally:
-            # Read agy's internal log ONCE (for conv-id + geo-block scan)
-            # before deleting it. Under agy 1.1.3 the --log-file may never be
-            # created — that's fine; stderr and the trajectory DB are the
-            # fallback signals.
-            try:
-                with open(log_path, "r", errors="replace") as _lf:
-                    log_text = _lf.read()
-            except OSError:
-                log_text = ""
-            conv_id = _parse_conversation_id_from_text(log_text)
-
-            # Capture artifacts BEFORE deleting the log (we need the conv-id)
-            # and BEFORE releasing the lock (so the scratch scan isn't racing
-            # the next serialized agy run).
-            if os.getenv("AGY_CAPTURE_ARTIFACTS", "true") != "false":
-                try:
-                    captured_artifacts, walkthrough_text = _capture_artifacts(
-                        workspace_dir, conv_id, started_at
-                    )
-                except Exception:
-                    pass
-
-            # Detect a swallowed Google geo-block (the root-cause failure agy
-            # turns into an exit-0 blank). Signal priority: the log, the
-            # streamed stderr, then agy's trajectory DB error_details. MUST
-            # run before _safe_unlink while the log still exists.
-            geo_block_excerpt = _scan_geo_block(log_text, ''.join(raw_stderr_chunks))
-            if not geo_block_excerpt:
-                geo_block_excerpt = _trajectory_db_geo_block(conv_id, started_at)
-
-            _safe_unlink(log_path)
-            unlink_prompt_file(prompt_file)
-            _AGY_LOCK.release()
+            if shadow_home:
+                shutil.rmtree(shadow_home, ignore_errors=True)
 
         raw_stdout = ''.join(raw_stdout_chunks)
         raw_stderr = ''.join(raw_stderr_chunks)

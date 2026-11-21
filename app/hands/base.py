@@ -583,6 +583,9 @@ class Hand(ABC):
     name: str = "unknown"
     hand_type: str = "unknown"  # "cli" | "http" | "mcp"
     description: str = ""
+    # True ONLY for a hand that enforces read-only tools, zero MCP servers, and
+    # scrubbed credentials under app/rsi_shadow_guard.py (ARC-297/298/303).
+    rsi_shadow_capable: bool = False
 
     @abstractmethod
     async def execute(
