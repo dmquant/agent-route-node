@@ -43,7 +43,8 @@ from app.hands.stream_processor import AgyStreamProcessor
 # this process-wide lock (the edge node is a single uvicorn process, so an
 # asyncio.Lock is sufficient). Throughput cost is acceptable — correctness
 # over speed; scale out with more nodes if needed.
-_AGY_LOCK = asyncio.Lock()
+_AGY_MAX_CONCURRENT = max(1, int(os.environ.get("AGY_MAX_CONCURRENT", "3")))
+_AGY_LOCK = asyncio.Semaphore(_AGY_MAX_CONCURRENT)
 
 
 def _agy_data_root() -> str:
@@ -282,7 +283,7 @@ class AgyHand(Hand):
         if on_log and _AGY_LOCK.locked():
             await on_log(json.dumps({
                 "chunkType": "system",
-                "content": "⏳ agy busy on this node — queued (agy runs serially)",
+                "content": f"⏳ agy busy on this node — queued (limit={_AGY_MAX_CONCURRENT})",
             }))
         await _AGY_LOCK.acquire()
         started_at = time.time()
