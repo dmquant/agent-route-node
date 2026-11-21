@@ -149,7 +149,7 @@ class ShadowHomeIsolationTest(unittest.TestCase):
             r = subprocess.run(
                 [
                     _SANDBOX_EXEC, "-p", profile,
-                    sys.executable, "-c",
+                    ("/usr/bin/python3" if os.path.isfile("/usr/bin/python3") else sys.executable), "-c",
                     (
                         "import sys\n"
                         "out = []\n"
