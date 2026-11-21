@@ -27,6 +27,7 @@ import os
 import re
 import json
 import shutil
+import sys
 import tempfile
 import time
 from typing import Optional, Callable, Any
@@ -224,6 +225,80 @@ def _prepare_shadow_home(real_home: str) -> str:
         raise
 
 
+_SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+
+
+def _sb_quote(val: str) -> str:
+    return val.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _build_shadow_seatbelt_profile(real_home: str) -> str:
+    """Build a macOS Seatbelt profile that kernel-denies reads of node/host
+    credentials and writes under real_home or /var/ros (ARC-303 G1)."""
+    rh = os.path.realpath(real_home)
+    deny_read_subpaths = [
+        os.path.join(rh, ".agent-route"),
+        os.path.join(rh, ".ssh"),
+        os.path.join(rh, ".claude"),
+        os.path.join(rh, ".codex"),
+        os.path.join(rh, ".gemini"),
+        os.path.join(rh, ".aws"),
+        os.path.join(rh, ".config"),
+        os.path.join(rh, "Library", "Keychains"),
+        os.path.join(rh, "prog"),
+        "/var/ros",
+        "/private/var/ros",
+    ]
+    deny_read_literals = [
+        os.path.join(rh, ".git-credentials"),
+        os.path.join(rh, ".netrc"),
+    ]
+    rules = ["(version 1)", "(allow default)"]
+    for sp in deny_read_subpaths:
+        rules.append(f'(deny file-read* (subpath "{_sb_quote(sp)}"))')
+    for lit in deny_read_literals:
+        rules.append(f'(deny file-read* (literal "{_sb_quote(lit)}"))')
+    rules.append(f'(deny file-read* (regex #"^{_sb_quote(re.escape(rh))}/agentroute-"))')
+    rules.append(f'(deny file-write* (subpath "{_sb_quote(rh)}"))')
+    rules.append('(deny file-write* (subpath "/var/ros") (subpath "/private/var/ros"))')
+    return "\n".join(rules)
+
+
+def _extract_token_secrets(token_path: str) -> tuple[str, ...]:
+    """Extract OAuth token strings (>=12 chars) for G2 output redaction."""
+    secrets: set[str] = set()
+
+    def _walk(obj: Any) -> None:
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if isinstance(v, str) and len(v) >= 12 and (
+                    "token" in k.lower() or "secret" in k.lower() or "key" in k.lower()
+                ):
+                    secrets.add(v)
+                else:
+                    _walk(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item)
+
+    try:
+        with open(token_path, "r", encoding="utf-8") as tf:
+            _walk(json.load(tf))
+    except Exception:
+        pass
+    return tuple(sorted(secrets, key=len, reverse=True))
+
+
+def _redact_secrets(text: str, secrets: tuple[str, ...]) -> str:
+    if not text or not secrets:
+        return text
+    out = text
+    for sec in secrets:
+        if sec in out:
+            out = out.replace(sec, "[REDACTED_AGY_TOKEN]")
+    return out
+
+
 class AgyHand(Hand):
     """Antigravity CLI agent via the `agy` binary.
 
@@ -237,8 +312,15 @@ class AgyHand(Hand):
 
     @property
     def rsi_shadow_capable(self) -> bool:
-        """True unless operator sets RSI_SHADOW_ENABLE_AGY=false (fail-closed kill)."""
-        return os.environ.get("RSI_SHADOW_ENABLE_AGY", "true").lower() != "false"
+        """Fail-closed unless macOS Seatbelt confinement is available (G1),
+        not in user-split mode (G3), and RSI_SHADOW_ENABLE_AGY != 'false'."""
+        if os.environ.get("RSI_SHADOW_ENABLE_AGY", "true").lower() == "false":
+            return False
+        if os.environ.get("AGENT_ROUTE_HAND_USER", "").strip():
+            return False
+        if sys.platform != "darwin" or not os.path.isfile(_SANDBOX_EXEC):
+            return False
+        return True
 
     async def execute(
         self,
@@ -251,14 +333,17 @@ class AgyHand(Hand):
     ) -> HandResult:
         is_shadow = rsi_shadow is not None
         shadow_home: Optional[str] = None
+        shadow_secrets: tuple[str, ...] = ()
+        real_home = os.path.expanduser("~")
         if is_shadow:
             if (
-                getattr(rsi_shadow, "allowed", False) is not True
+                not self.rsi_shadow_capable
+                or getattr(rsi_shadow, "allowed", False) is not True
                 or getattr(rsi_shadow, "applies", False) is not True
                 or not isinstance(getattr(rsi_shadow, "env", None), dict)
             ):
                 return HandResult(
-                    output="[LANE_REFUSED] malformed rsi_shadow decision; the task was not run",
+                    output="[RSI_SHADOW_REFUSED] malformed rsi_shadow decision or host lacks Seatbelt confinement; the task was not run",
                     exit_code=66,
                 )
 
@@ -268,10 +353,13 @@ class AgyHand(Hand):
         try:
             if is_shadow:
                 try:
-                    shadow_home = _prepare_shadow_home(os.path.expanduser("~"))
+                    shadow_home = _prepare_shadow_home(real_home)
+                    shadow_secrets = _extract_token_secrets(
+                        os.path.join(shadow_home, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+                    )
                 except Exception as e:
                     return HandResult(
-                        output=f"[LANE_REFUSED] rsi-shadow isolation setup failed ({e}); the task was not run",
+                        output=f"[RSI_SHADOW_REFUSED] rsi-shadow isolation setup failed ({e}); the task was not run",
                         exit_code=66,
                     )
                 # Strictly use rsi_shadow_guard's scrubbed allowlist env + ephemeral HOME.
@@ -348,9 +436,16 @@ class AgyHand(Hand):
             await _AGY_LOCK.acquire()
             started_at = time.time()
 
+            spawn_cmd = cmd
+            spawn_args = args
+            if is_shadow:
+                sb_profile = _build_shadow_seatbelt_profile(real_home)
+                spawn_cmd = _SANDBOX_EXEC
+                spawn_args = ["-p", sb_profile, cmd] + args
+
             try:
                 process = await spawn_hand(
-                    "agy", cmd, args,
+                    "agy", spawn_cmd, spawn_args,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=workspace_dir,
@@ -392,11 +487,12 @@ class AgyHand(Hand):
                         if any(p.search(line) for p in _NOISE_PATTERNS):
                             continue
                         if on_log:
-                            activity = classify_line(line, agent="gemini")
+                            safe_line = _redact_secrets(line, shadow_secrets) if is_shadow else line
+                            activity = classify_line(safe_line, agent="gemini")
                             if activity:
                                 await on_log(json.dumps(activity.to_chunk()))
                             else:
-                                await on_log(json.dumps({"chunkType": "system", "content": line}))
+                                await on_log(json.dumps({"chunkType": "system", "content": safe_line}))
 
             async def read_stdout():
                 dec = utf8_stream_decoder()
@@ -452,6 +548,9 @@ class AgyHand(Hand):
 
         raw_stdout = ''.join(raw_stdout_chunks)
         raw_stderr = ''.join(raw_stderr_chunks)
+        if is_shadow and shadow_secrets:
+            raw_stdout = _redact_secrets(raw_stdout, shadow_secrets)
+            raw_stderr = _redact_secrets(raw_stderr, shadow_secrets)
 
         output_text = filter_noise(raw_stdout).strip()
         # filter_noise can theoretically swallow a whole valid markdown

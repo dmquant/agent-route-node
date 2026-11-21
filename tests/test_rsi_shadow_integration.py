@@ -2,12 +2,19 @@
 import asyncio
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import types
 import unittest
 from unittest import mock
 
-from app.hands.agy_hand import AgyHand, _prepare_shadow_home
+from app.hands.agy_hand import (
+    AgyHand,
+    _SANDBOX_EXEC,
+    _build_shadow_seatbelt_profile,
+    _prepare_shadow_home,
+)
 from app.hands.base import Hand, HandResult
 from app.rsi_shadow_guard import EXIT_REFUSED, guard
 
@@ -64,12 +71,18 @@ class HandCapabilitiesTest(unittest.TestCase):
         for cls in (ClaudeHand, CodexHand, OpencodeHand, GeminiHand, OllamaHand, MfluxHand, VaneHand):
             self.assertIs(getattr(cls(), "rsi_shadow_capable", False), False, cls.__name__)
 
-    def test_agy_hand_shadow_capable_respects_kill_env(self):
+    def test_agy_hand_shadow_capable_respects_kill_env_and_split_user(self):
         h = AgyHand()
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("RSI_SHADOW_ENABLE_AGY", None)
-            self.assertIs(h.rsi_shadow_capable, True)
+            os.environ.pop("AGENT_ROUTE_HAND_USER", None)
+            if sys.platform == "darwin" and os.path.isfile(_SANDBOX_EXEC):
+                self.assertIs(h.rsi_shadow_capable, True)
         with mock.patch.dict(os.environ, {"RSI_SHADOW_ENABLE_AGY": "false"}):
+            self.assertIs(h.rsi_shadow_capable, False)
+            d = guard(_valid_pulled_shadow_task("agy"), h, {"PATH": "/usr/bin"})
+            self.assertFalse(d.allowed)
+        with mock.patch.dict(os.environ, {"AGENT_ROUTE_HAND_USER": "_ros_hand"}):
             self.assertIs(h.rsi_shadow_capable, False)
             d = guard(_valid_pulled_shadow_task("agy"), h, {"PATH": "/usr/bin"})
             self.assertFalse(d.allowed)
@@ -118,6 +131,38 @@ class ShadowHomeIsolationTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 _prepare_shadow_home(empty_home)
 
+    @unittest.skipUnless(sys.platform == "darwin" and os.path.isfile(_SANDBOX_EXEC), "macOS sandbox-exec only")
+    def test_seatbelt_profile_blocks_secret_read_and_home_write_at_kernel(self):
+        with tempfile.TemporaryDirectory() as fake_home:
+            ar_dir = os.path.join(fake_home, ".agent-route")
+            os.makedirs(ar_dir)
+            secret_path = os.path.join(ar_dir, ".env")
+            with open(secret_path, "w") as f:
+                f.write("NODE_KEY=canary-secret-12345\n")
+            profile = _build_shadow_seatbelt_profile(fake_home)
+            write_target = os.path.join(fake_home, "should_not_write.txt")
+            r = subprocess.run(
+                [
+                    _SANDBOX_EXEC, "-p", profile,
+                    sys.executable, "-c",
+                    (
+                        "import sys\n"
+                        "out = []\n"
+                        "try:\n open(sys.argv[1]).read(); out.append('READ_OK')\n"
+                        "except PermissionError:\n out.append('READ_EPERM')\n"
+                        "try:\n open(sys.argv[2], 'w').write('x'); out.append('WRITE_OK')\n"
+                        "except PermissionError:\n out.append('WRITE_EPERM')\n"
+                        "print(','.join(out))\n"
+                    ),
+                    secret_path,
+                    write_target,
+                ],
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout.strip(), "READ_EPERM,WRITE_EPERM")
+            self.assertFalse(os.path.exists(write_target))
+
 
 class AgyHandShadowExecutionTest(unittest.TestCase):
     def test_agy_shadow_strips_creds_uses_plan_mode_skips_mcp_and_cleans_up(self):
@@ -125,7 +170,7 @@ class AgyHandShadowExecutionTest(unittest.TestCase):
             cli_dir = os.path.join(fake_home, ".gemini", "antigravity-cli")
             os.makedirs(cli_dir)
             with open(os.path.join(cli_dir, "antigravity-oauth-token"), "w") as f:
-                f.write('{"token":{"access_token":"dummy"}}\n')
+                f.write('{"token":{"access_token":"ya29.fake-access-token-secret-999","refresh_token":"1//fake-refresh-token-secret-888"}}\n')
 
             dirty_env = {
                 "PATH": "/usr/bin:/bin",
@@ -149,7 +194,9 @@ class AgyHandShadowExecutionTest(unittest.TestCase):
                 captured["shadow_home_existed_during_run"] = os.path.isdir(kw["env"]["HOME"])
                 with open(os.path.join(kw["env"]["HOME"], ".gemini", "config", "mcp_config.json")) as mf:
                     captured["mcp_cfg_during_run"] = json.load(mf)
-                return _FakeProcess(stdout=b'{"thesis":"ok"}\n')
+                return _FakeProcess(
+                    stdout=b'{"thesis":"ok","echo":"ya29.fake-access-token-secret-999","ref":"1//fake-refresh-token-secret-888"}\n'
+                )
 
             with mock.patch("app.hands.agy_hand.os.path.expanduser", return_value=fake_home), \
                  mock.patch("app.hands.agy_hand.mcp_prepare") as mock_mcp, \
@@ -158,8 +205,14 @@ class AgyHandShadowExecutionTest(unittest.TestCase):
                 res = asyncio.run(hand.execute("hello shadow", workspace_dir=ws, rsi_shadow=decision))
 
             self.assertEqual(res.exit_code, 0)
-            self.assertEqual(res.output, '{"thesis":"ok"}')
+            self.assertNotIn("ya29.fake-access-token-secret-999", res.output)
+            self.assertNotIn("1//fake-refresh-token-secret-888", res.output)
+            self.assertIn("[REDACTED_AGY_TOKEN]", res.output)
             mock_mcp.assert_not_called()
+            self.assertEqual(captured["cmd"], _SANDBOX_EXEC)
+            self.assertEqual(captured["args"][0], "-p")
+            self.assertIn(".agent-route", captured["args"][1])
+            self.assertEqual(captured["args"][2], "/opt/ros-runtime/bin/agy")
             self.assertIn("--mode", captured["args"])
             self.assertEqual(captured["args"][captured["args"].index("--mode") + 1], "plan")
             self.assertNotIn("--dangerously-skip-permissions", captured["args"])
